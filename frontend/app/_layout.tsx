@@ -1,11 +1,16 @@
 import React, { useEffect } from 'react';
-import { Redirect } from 'expo-router';
+import { Stack } from 'expo-router';
+import { StatusBar } from 'expo-status-bar';
 import { useAuthStore } from '../src/store/authStore';
 import { View, ActivityIndicator, StyleSheet } from 'react-native';
 import { colors } from '../src/constants/theme';
 
-export default function Index() {
-  const { isAuthenticated, isLoading } = useAuthStore();
+export default function RootLayout() {
+  const { isLoading, loadStoredAuth } = useAuthStore();
+
+  useEffect(() => {
+    loadStoredAuth();
+  }, []);
 
   if (isLoading) {
     return (
@@ -15,11 +20,16 @@ export default function Index() {
     );
   }
 
-  if (isAuthenticated) {
-    return <Redirect href="/(tabs)" />;
-  }
-
-  return <Redirect href="/(auth)/login" />;
+  return (
+    <>
+      <StatusBar style="dark" />
+      <Stack screenOptions={{ headerShown: false }}>
+        <Stack.Screen name="index" />
+        <Stack.Screen name="(auth)" />
+        <Stack.Screen name="(tabs)" />
+      </Stack>
+    </>
+  );
 }
 
 const styles = StyleSheet.create({
