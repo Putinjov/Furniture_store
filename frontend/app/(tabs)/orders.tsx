@@ -885,13 +885,15 @@ export default function OrdersScreen() {
                   )}
 
                   {/* Add Payment Button */}
-                  <Button
-                    title="Record Payment"
-                    onPress={() => setShowPaymentModal(true)}
-                    variant="success"
-                    icon={<Ionicons name="card" size={20} color="#fff" />}
-                    style={{ marginTop: spacing.md }}
-                  />
+                  {selectedOrder.status !== 'cancelled' && selectedOrder.status !== 'completed' && (
+                    <Button
+                      title="Record Payment"
+                      onPress={() => setShowPaymentModal(true)}
+                      variant="success"
+                      icon={<Ionicons name="card" size={20} color="#fff" />}
+                      style={{ marginTop: spacing.md }}
+                    />
+                  )}
                 </Card>
 
                 {selectedOrder.seller_comments && (
