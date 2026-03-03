@@ -457,6 +457,22 @@ async def startup_event():
                 "base_price": 75,
                 "created_at": datetime.utcnow()
             },
+            {
+                "_id": ObjectId(),
+                "name": "Take Away - Contactless",
+                "description": "Contactless old furniture pickup - arranged separately",
+                "service_type": ServiceType.TAKEAWAY_MATTRESS_SMALL.value,
+                "base_price": 0,
+                "created_at": datetime.utcnow()
+            },
+            {
+                "_id": ObjectId(),
+                "name": "Take Away - Arrange via Phone",
+                "description": "Arrange old furniture pickup over phone",
+                "service_type": ServiceType.TAKEAWAY_MATTRESS_SMALL.value,
+                "base_price": 0,
+                "created_at": datetime.utcnow()
+            },
         ]
         await db.services.insert_many(default_services)
         logger.info("Default services created")

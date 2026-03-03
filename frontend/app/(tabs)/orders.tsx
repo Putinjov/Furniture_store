@@ -123,10 +123,14 @@ export default function OrdersScreen() {
   const [selectedServices, setSelectedServices] = useState<SelectedService[]>([]);
   const [discount, setDiscount] = useState('0');
   const [comments, setComments] = useState('');
+  
+  // Payment at order creation
+  const [initialPaymentAmount, setInitialPaymentAmount] = useState('');
+  const [initialPaymentType, setInitialPaymentType] = useState<string | null>(null);
 
-  // Payment form state
+  // Payment form state (for existing orders)
   const [paymentAmount, setPaymentAmount] = useState('');
-  const [paymentType, setPaymentType] = useState('');
+  const [paymentType, setPaymentType] = useState<string | null>(null);
   const [paymentNotes, setPaymentNotes] = useState('');
 
   const fetchData = useCallback(async () => {
@@ -171,11 +175,13 @@ export default function OrdersScreen() {
     setSelectedServices([]);
     setDiscount('0');
     setComments('');
+    setInitialPaymentAmount('');
+    setInitialPaymentType(null);
   };
 
   const resetPaymentForm = () => {
     setPaymentAmount('');
-    setPaymentType('');
+    setPaymentType(null);
     setPaymentNotes('');
   };
 
@@ -204,9 +210,38 @@ export default function OrdersScreen() {
       return;
     }
 
+    // Validate payment if amount entered
+    const paymentAmt = parseFloat(initialPaymentAmount);
+    if (initialPaymentAmount && !isNaN(paymentAmt) && paymentAmt > 0 && !initialPaymentType) {
+      Alert.alert('Error', 'Please select a payment type');
+      return;
+    }
+
     setLoading(true);
     try {
       const totalItems = selectedProducts.reduce((sum, sp) => sum + sp.quantity, 0);
+      
+      // Calculate total for payment status
+      const productsTotal = selectedProducts.reduce((sum, sp) => sum + sp.product.price * sp.quantity, 0);
+      const servicesTotal = selectedServices.reduce((sum, ss) => {
+        return sum + calculateServicePrice(ss.service, totalItems, ss.quantity);
+      }, 0);
+      const subtotal = productsTotal + servicesTotal;
+      const discountAmount = subtotal * (parseFloat(discount) || 0) / 100;
+      const orderTotal = subtotal - discountAmount;
+      
+      // Determine initial payment status
+      let paymentStatus = 'unpaid';
+      let amountPaid = 0;
+      
+      if (initialPaymentAmount && !isNaN(paymentAmt) && paymentAmt > 0 && initialPaymentType) {
+        amountPaid = paymentAmt;
+        if (paymentAmt >= orderTotal) {
+          paymentStatus = 'paid';
+        } else {
+          paymentStatus = 'partially_paid';
+        }
+      }
       
       const orderData = {
         customer: {
@@ -231,11 +266,22 @@ export default function OrdersScreen() {
         })),
         discount_percent: parseFloat(discount) || 0,
         seller_comments: comments,
-        payment_status: 'unpaid',
-        amount_paid: 0,
+        payment_status: paymentStatus,
+        amount_paid: amountPaid,
       };
 
-      await api.post('/orders', orderData);
+      const response = await api.post('/orders', orderData);
+      const newOrderId = response.data.id;
+      
+      // If payment was made, record it
+      if (amountPaid > 0 && initialPaymentType) {
+        await api.post(`/orders/${newOrderId}/payments`, {
+          amount: amountPaid,
+          payment_type: initialPaymentType,
+          notes: 'Payment at order creation',
+        });
+      }
+      
       Alert.alert('Success', 'Order created successfully');
       setShowCreateModal(false);
       resetForm();
@@ -347,6 +393,15 @@ export default function OrdersScreen() {
     );
   };
 
+  // Toggle payment type selection (can uncheck)
+  const togglePaymentType = (type: string, isInitial: boolean = false) => {
+    if (isInitial) {
+      setInitialPaymentType(prev => prev === type ? null : type);
+    } else {
+      setPaymentType(prev => prev === type ? null : type);
+    }
+  };
+
   const calculateTotal = () => {
     const productsTotal = selectedProducts.reduce((sum, sp) => sum + sp.product.price * sp.quantity, 0);
     const totalItems = selectedProducts.reduce((sum, sp) => sum + sp.quantity, 0);
@@ -424,6 +479,9 @@ export default function OrdersScreen() {
   const assemblyServices = services.filter(s => s.service_type === 'assembly');
   const deliveryServices = services.filter(s => s.service_type === 'delivery');
   const takeawayServices = services.filter(s => s.service_type.startsWith('takeaway'));
+  
+  // Filter payment types for order creation (exclude refund)
+  const createOrderPaymentTypes = paymentTypes.filter(t => t.value !== 'refund');
 
   return (
     <SafeAreaView style={styles.container}>
@@ -617,6 +675,48 @@ export default function OrdersScreen() {
               <View style={styles.totalSection}>
                 <Text style={styles.totalLabel}>Total:</Text>
                 <Text style={styles.totalValue}>€{calculateTotal().toFixed(2)}</Text>
+              </View>
+
+              {/* Payment Section for Order Creation */}
+              <View style={styles.paymentCreateSection}>
+                <Text style={styles.sectionTitle}>Record Payment (Optional)</Text>
+                <Text style={styles.sectionHint}>Record initial payment when creating order</Text>
+                
+                <Text style={styles.paymentInputLabel}>Amount (€)</Text>
+                <TextInput
+                  style={styles.paymentInput}
+                  value={initialPaymentAmount}
+                  onChangeText={setInitialPaymentAmount}
+                  keyboardType="decimal-pad"
+                  placeholder="0.00"
+                  placeholderTextColor={colors.textSecondary}
+                />
+
+                <Text style={styles.paymentInputLabel}>Payment Type (tap to select/unselect)</Text>
+                <View style={styles.paymentTypesGrid}>
+                  {createOrderPaymentTypes.map(type => (
+                    <TouchableOpacity
+                      key={type.value}
+                      style={[
+                        styles.paymentTypeChip,
+                        initialPaymentType === type.value && styles.paymentTypeChipSelected,
+                      ]}
+                      onPress={() => togglePaymentType(type.value, true)}
+                    >
+                      <Ionicons 
+                        name={type.icon as any} 
+                        size={18} 
+                        color={initialPaymentType === type.value ? '#fff' : colors.text} 
+                      />
+                      <Text style={[
+                        styles.paymentTypeText,
+                        initialPaymentType === type.value && styles.paymentTypeTextSelected,
+                      ]}>
+                        {type.label}
+                      </Text>
+                    </TouchableOpacity>
+                  ))}
+                </View>
               </View>
 
               <Button title="Create Order" onPress={handleCreateOrder} loading={loading} />
@@ -823,7 +923,7 @@ export default function OrdersScreen() {
                 placeholderTextColor={colors.textSecondary}
               />
 
-              <Text style={styles.paymentInputLabel}>Payment Type</Text>
+              <Text style={styles.paymentInputLabel}>Payment Type (tap to select/unselect)</Text>
               <View style={styles.paymentTypesGrid}>
                 {paymentTypes.map(type => (
                   <TouchableOpacity
@@ -832,8 +932,9 @@ export default function OrdersScreen() {
                       styles.paymentTypeChip,
                       paymentType === type.value && styles.paymentTypeChipSelected,
                       type.value === 'refund' && styles.paymentTypeRefund,
+                      type.value === 'refund' && paymentType === type.value && styles.paymentTypeRefundSelected,
                     ]}
-                    onPress={() => setPaymentType(type.value)}
+                    onPress={() => togglePaymentType(type.value, false)}
                   >
                     <Ionicons 
                       name={type.icon as any} 
@@ -866,6 +967,7 @@ export default function OrdersScreen() {
                 onPress={handleAddPayment}
                 loading={loading}
                 variant={paymentType === 'refund' ? 'danger' : 'success'}
+                disabled={!paymentType}
               />
             </View>
           </View>
@@ -1049,6 +1151,14 @@ const styles = StyleSheet.create({
   },
   driverName: { marginLeft: spacing.sm, fontSize: fontSize.md, color: colors.text },
   // Payment styles
+  paymentCreateSection: {
+    backgroundColor: colors.success + '10',
+    padding: spacing.md,
+    borderRadius: borderRadius.md,
+    marginBottom: spacing.md,
+    borderWidth: 1,
+    borderColor: colors.success + '30',
+  },
   paymentSummary: {
     backgroundColor: colors.divider,
     padding: spacing.md,
@@ -1157,6 +1267,10 @@ const styles = StyleSheet.create({
     borderColor: colors.success,
   },
   paymentTypeRefund: {
+    borderColor: colors.danger,
+  },
+  paymentTypeRefundSelected: {
+    backgroundColor: colors.danger,
     borderColor: colors.danger,
   },
   paymentTypeText: { fontSize: fontSize.sm, color: colors.text },
