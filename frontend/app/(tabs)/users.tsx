@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useCallback } from 'react';
+import React, { useEffect, useState, useCallback, useRef } from 'react';
 import {
   View,
   Text,
@@ -11,6 +11,7 @@ import {
   ScrollView,
   KeyboardAvoidingView,
   Platform,
+  ActivityIndicator,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
@@ -31,6 +32,8 @@ interface User {
   created_at: string;
 }
 
+const PAGE_SIZE = 20;
+
 export default function UsersScreen() {
   const [users, setUsers] = useState<User[]>([]);
   const [refreshing, setRefreshing] = useState(false);
@@ -38,29 +41,63 @@ export default function UsersScreen() {
   const [loading, setLoading] = useState(false);
   const [editingUser, setEditingUser] = useState<User | null>(null);
 
+  // Pagination state
+  const [loadingMore, setLoadingMore] = useState(false);
+  const [hasMore, setHasMore] = useState(true);
+  const skipRef = useRef(0);
+  const isLoadingRef = useRef(false);
+
   // Form state
   const [formName, setFormName] = useState('');
   const [formEmail, setFormEmail] = useState('');
   const [formPassword, setFormPassword] = useState('');
   const [formRole, setFormRole] = useState('seller');
 
-  const fetchUsers = useCallback(async () => {
+  const fetchUsers = useCallback(async (skip: number = 0, isRefresh: boolean = false) => {
+    if (isLoadingRef.current && !isRefresh) return;
+
+    isLoadingRef.current = true;
+    if (skip > 0) setLoadingMore(true);
+
     try {
-      const response = await api.get('/users');
-      setUsers(response.data);
+      const response = await api.get(`/users?skip=${skip}&limit=${PAGE_SIZE}`);
+      const newUsers = response.data;
+
+      if (newUsers.length < PAGE_SIZE) {
+        setHasMore(false);
+      }
+
+      if (isRefresh || skip === 0) {
+        setUsers(newUsers);
+        skipRef.current = newUsers.length;
+      } else {
+        setUsers(prev => [...prev, ...newUsers]);
+        skipRef.current += newUsers.length;
+      }
     } catch (error) {
-      console.error('Fetch error:', error);
+      console.error('Fetch users error:', error);
+    } finally {
+      setLoadingMore(false);
+      isLoadingRef.current = false;
     }
   }, []);
 
   useEffect(() => {
-    fetchUsers();
+    fetchUsers(0, true);
   }, [fetchUsers]);
 
   const onRefresh = async () => {
     setRefreshing(true);
-    await fetchUsers();
+    skipRef.current = 0;
+    setHasMore(true);
+    await fetchUsers(0, true);
     setRefreshing(false);
+  };
+
+  const loadMoreUsers = () => {
+    if (!loadingMore && hasMore && !isLoadingRef.current) {
+      fetchUsers(skipRef.current);
+    }
   };
 
   const resetForm = () => {
@@ -118,7 +155,7 @@ export default function UsersScreen() {
       Alert.alert('Success', `User ${editingUser ? 'updated' : 'created'} successfully`);
       setShowModal(false);
       resetForm();
-      fetchUsers();
+      onRefresh();
     } catch (error: any) {
       Alert.alert('Error', error.response?.data?.detail || 'Failed to save user');
     } finally {
@@ -129,7 +166,7 @@ export default function UsersScreen() {
   const handleToggleActive = async (user: User) => {
     try {
       await api.put(`/users/${user.id}`, { is_active: !user.is_active });
-      fetchUsers();
+      onRefresh();
     } catch (error: any) {
       Alert.alert('Error', error.response?.data?.detail || 'Failed to update user');
     }
@@ -147,7 +184,7 @@ export default function UsersScreen() {
           onPress: async () => {
             try {
               await api.delete(`/users/${user.id}`);
-              fetchUsers();
+              onRefresh();
             } catch (error: any) {
               Alert.alert('Error', error.response?.data?.detail || 'Failed to delete user');
             }
@@ -175,6 +212,16 @@ export default function UsersScreen() {
       case 'driver': return 'warning';
       default: return 'default';
     }
+  };
+
+  const renderFooter = () => {
+    if (!loadingMore) return null;
+    return (
+      <View style={styles.loadingFooter}>
+        <ActivityIndicator size="small" color={colors.primary} />
+        <Text style={styles.loadingText}>Loading more...</Text>
+      </View>
+    );
   };
 
   const renderUser = ({ item }: { item: User }) => (
@@ -235,6 +282,9 @@ export default function UsersScreen() {
         refreshControl={
           <RefreshControl refreshing={refreshing} onRefresh={onRefresh} />
         }
+        onEndReached={loadMoreUsers}
+        onEndReachedThreshold={0.3}
+        ListFooterComponent={renderFooter}
         ListEmptyComponent={
           <View style={styles.emptyState}>
             <Ionicons name="people-outline" size={48} color={colors.textSecondary} />
@@ -389,4 +439,15 @@ const styles = StyleSheet.create({
     marginBottom: spacing.md,
   },
   picker: { height: 50 },
+  loadingFooter: {
+    flexDirection: 'row',
+    justifyContent: 'center',
+    alignItems: 'center',
+    paddingVertical: spacing.md,
+    gap: spacing.sm,
+  },
+  loadingText: {
+    fontSize: fontSize.sm,
+    color: colors.textSecondary,
+  },
 });

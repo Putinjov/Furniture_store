@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useCallback } from 'react';
+import React, { useEffect, useState, useCallback, useRef } from 'react';
 import {
   View,
   Text,
@@ -12,6 +12,7 @@ import {
   KeyboardAvoidingView,
   Platform,
   TextInput,
+  ActivityIndicator,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
@@ -101,6 +102,8 @@ interface SelectedService {
   quantity: number;
 }
 
+const PAGE_SIZE = 20;
+
 export default function OrdersScreen() {
   const { user } = useAuthStore();
   const [orders, setOrders] = useState<Order[]>([]);
@@ -114,6 +117,12 @@ export default function OrdersScreen() {
   const [showPaymentModal, setShowPaymentModal] = useState(false);
   const [selectedOrder, setSelectedOrder] = useState<Order | null>(null);
   const [loading, setLoading] = useState(false);
+  
+  // Pagination state
+  const [loadingMore, setLoadingMore] = useState(false);
+  const [hasMoreOrders, setHasMoreOrders] = useState(true);
+  const skipRef = useRef(0);
+  const isLoadingRef = useRef(false);
 
   // Create order form state
   const [customerName, setCustomerName] = useState('');
@@ -133,15 +142,13 @@ export default function OrdersScreen() {
   const [paymentType, setPaymentType] = useState<string | null>(null);
   const [paymentNotes, setPaymentNotes] = useState('');
 
-  const fetchData = useCallback(async () => {
+  const fetchStaticData = useCallback(async () => {
     try {
-      const [ordersRes, productsRes, servicesRes, paymentTypesRes] = await Promise.all([
-        api.get('/orders'),
+      const [productsRes, servicesRes, paymentTypesRes] = await Promise.all([
         api.get('/products'),
         api.get('/services'),
         api.get('/payment-types'),
       ]);
-      setOrders(ordersRes.data);
       setProducts(productsRes.data);
       setServices(servicesRes.data);
       setPaymentTypes(paymentTypesRes.data);
@@ -153,18 +160,56 @@ export default function OrdersScreen() {
         } catch {}
       }
     } catch (error) {
-      console.error('Fetch error:', error);
+      console.error('Fetch static data error:', error);
     }
   }, [user]);
 
+  const fetchOrders = useCallback(async (skip: number = 0, isRefresh: boolean = false) => {
+    if (isLoadingRef.current && !isRefresh) return;
+    
+    isLoadingRef.current = true;
+    if (skip > 0) setLoadingMore(true);
+
+    try {
+      const response = await api.get(`/orders?skip=${skip}&limit=${PAGE_SIZE}`);
+      const newOrders = response.data;
+
+      if (newOrders.length < PAGE_SIZE) {
+        setHasMoreOrders(false);
+      }
+
+      if (isRefresh || skip === 0) {
+        setOrders(newOrders);
+        skipRef.current = newOrders.length;
+      } else {
+        setOrders(prev => [...prev, ...newOrders]);
+        skipRef.current += newOrders.length;
+      }
+    } catch (error) {
+      console.error('Fetch orders error:', error);
+    } finally {
+      setLoadingMore(false);
+      isLoadingRef.current = false;
+    }
+  }, []);
+
   useEffect(() => {
-    fetchData();
-  }, [fetchData]);
+    fetchStaticData();
+    fetchOrders(0, true);
+  }, [fetchStaticData, fetchOrders]);
 
   const onRefresh = async () => {
     setRefreshing(true);
-    await fetchData();
+    skipRef.current = 0;
+    setHasMoreOrders(true);
+    await fetchOrders(0, true);
     setRefreshing(false);
+  };
+
+  const loadMoreOrders = () => {
+    if (!loadingMore && hasMoreOrders && !isLoadingRef.current) {
+      fetchOrders(skipRef.current);
+    }
   };
 
   const resetForm = () => {
@@ -285,7 +330,7 @@ export default function OrdersScreen() {
       Alert.alert('Success', 'Order created successfully');
       setShowCreateModal(false);
       resetForm();
-      fetchData();
+      onRefresh();
     } catch (error: any) {
       Alert.alert('Error', error.response?.data?.detail || 'Failed to create order');
     } finally {
@@ -318,7 +363,7 @@ export default function OrdersScreen() {
       Alert.alert('Success', 'Payment recorded successfully');
       setShowPaymentModal(false);
       resetPaymentForm();
-      fetchData();
+      onRefresh();
     } catch (error: any) {
       Alert.alert('Error', error.response?.data?.detail || 'Failed to record payment');
     } finally {
@@ -329,7 +374,7 @@ export default function OrdersScreen() {
   const handleUpdateStatus = async (orderId: string, newStatus: string) => {
     try {
       await api.put(`/orders/${orderId}`, { status: newStatus });
-      fetchData();
+      onRefresh();
       if (selectedOrder?.id === orderId) {
         setSelectedOrder(prev => prev ? {...prev, status: newStatus} : null);
       }
@@ -342,7 +387,7 @@ export default function OrdersScreen() {
     try {
       await api.put(`/orders/${orderId}`, { driver_id: driverId, status: 'in_delivery' });
       Alert.alert('Success', 'Driver assigned successfully');
-      fetchData();
+      onRefresh();
     } catch (error: any) {
       Alert.alert('Error', error.response?.data?.detail || 'Failed to assign driver');
     }
@@ -483,6 +528,16 @@ export default function OrdersScreen() {
   // Filter payment types for order creation (exclude refund)
   const createOrderPaymentTypes = paymentTypes.filter(t => t.value !== 'refund');
 
+  const renderFooter = () => {
+    if (!loadingMore) return null;
+    return (
+      <View style={styles.loadingFooter}>
+        <ActivityIndicator size="small" color={colors.primary} />
+        <Text style={styles.loadingText}>Loading more...</Text>
+      </View>
+    );
+  };
+
   return (
     <SafeAreaView style={styles.container}>
       <View style={styles.header}>
@@ -503,6 +558,9 @@ export default function OrdersScreen() {
         refreshControl={
           <RefreshControl refreshing={refreshing} onRefresh={onRefresh} />
         }
+        onEndReached={loadMoreOrders}
+        onEndReachedThreshold={0.3}
+        ListFooterComponent={renderFooter}
         ListEmptyComponent={
           <View style={styles.emptyState}>
             <Ionicons name="receipt-outline" size={48} color={colors.textSecondary} />
@@ -1276,4 +1334,15 @@ const styles = StyleSheet.create({
   paymentTypeText: { fontSize: fontSize.sm, color: colors.text },
   paymentTypeTextSelected: { color: '#fff' },
   paymentTypeRefundText: { color: colors.danger },
+  loadingFooter: {
+    flexDirection: 'row',
+    justifyContent: 'center',
+    alignItems: 'center',
+    paddingVertical: spacing.md,
+    gap: spacing.sm,
+  },
+  loadingText: {
+    fontSize: fontSize.sm,
+    color: colors.textSecondary,
+  },
 });

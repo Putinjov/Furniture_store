@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useCallback } from 'react';
+import React, { useEffect, useState, useCallback, useRef } from 'react';
 import {
   View,
   Text,
@@ -11,6 +11,7 @@ import {
   ScrollView,
   Linking,
   TextInput,
+  ActivityIndicator,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
@@ -47,6 +48,8 @@ interface PaymentTypeOption {
   icon: string;
 }
 
+const PAGE_SIZE = 20;
+
 export default function DeliveriesScreen() {
   const { user } = useAuthStore();
   const [deliveries, setDeliveries] = useState<Delivery[]>([]);
@@ -59,6 +62,12 @@ export default function DeliveriesScreen() {
   const [loading, setLoading] = useState(false);
   const [notes, setNotes] = useState('');
   
+  // Pagination state
+  const [loadingMore, setLoadingMore] = useState(false);
+  const [hasMore, setHasMore] = useState(true);
+  const skipRef = useRef(0);
+  const isLoadingRef = useRef(false);
+  
   // Payment form state
   const [paymentAmount, setPaymentAmount] = useState('');
   const [paymentType, setPaymentType] = useState('');
@@ -66,27 +75,61 @@ export default function DeliveriesScreen() {
 
   const isDriver = user?.role === 'driver';
 
-  const fetchDeliveries = useCallback(async () => {
+  const fetchPaymentTypes = useCallback(async () => {
     try {
-      const [deliveriesRes, paymentTypesRes] = await Promise.all([
-        api.get('/deliveries'),
-        api.get('/payment-types'),
-      ]);
-      setDeliveries(deliveriesRes.data);
+      const paymentTypesRes = await api.get('/payment-types');
       setPaymentTypes(paymentTypesRes.data);
     } catch (error) {
-      console.error('Fetch error:', error);
+      console.error('Fetch payment types error:', error);
+    }
+  }, []);
+
+  const fetchDeliveries = useCallback(async (skip: number = 0, isRefresh: boolean = false) => {
+    if (isLoadingRef.current && !isRefresh) return;
+
+    isLoadingRef.current = true;
+    if (skip > 0) setLoadingMore(true);
+
+    try {
+      const response = await api.get(`/deliveries?skip=${skip}&limit=${PAGE_SIZE}`);
+      const newDeliveries = response.data;
+
+      if (newDeliveries.length < PAGE_SIZE) {
+        setHasMore(false);
+      }
+
+      if (isRefresh || skip === 0) {
+        setDeliveries(newDeliveries);
+        skipRef.current = newDeliveries.length;
+      } else {
+        setDeliveries(prev => [...prev, ...newDeliveries]);
+        skipRef.current += newDeliveries.length;
+      }
+    } catch (error) {
+      console.error('Fetch deliveries error:', error);
+    } finally {
+      setLoadingMore(false);
+      isLoadingRef.current = false;
     }
   }, []);
 
   useEffect(() => {
-    fetchDeliveries();
-  }, [fetchDeliveries]);
+    fetchPaymentTypes();
+    fetchDeliveries(0, true);
+  }, [fetchPaymentTypes, fetchDeliveries]);
 
   const onRefresh = async () => {
     setRefreshing(true);
-    await fetchDeliveries();
+    skipRef.current = 0;
+    setHasMore(true);
+    await fetchDeliveries(0, true);
     setRefreshing(false);
+  };
+
+  const loadMoreDeliveries = () => {
+    if (!loadingMore && hasMore && !isLoadingRef.current) {
+      fetchDeliveries(skipRef.current);
+    }
   };
 
   const fetchOrderDetails = async (orderId: string) => {
@@ -109,7 +152,7 @@ export default function DeliveriesScreen() {
       });
       Alert.alert('Success', 'Delivery status updated');
       setSelectedDelivery(prev => prev ? { ...prev, status: newStatus, notes } : null);
-      fetchDeliveries();
+      onRefresh();
     } catch (error: any) {
       Alert.alert('Error', error.response?.data?.detail || 'Failed to update status');
     } finally {
@@ -212,6 +255,16 @@ export default function DeliveriesScreen() {
     }
   };
 
+  const renderFooter = () => {
+    if (!loadingMore) return null;
+    return (
+      <View style={styles.loadingFooter}>
+        <ActivityIndicator size="small" color={colors.primary} />
+        <Text style={styles.loadingText}>Loading more...</Text>
+      </View>
+    );
+  };
+
   return (
     <SafeAreaView style={styles.container}>
       <View style={styles.header}>
@@ -231,6 +284,9 @@ export default function DeliveriesScreen() {
         refreshControl={
           <RefreshControl refreshing={refreshing} onRefresh={onRefresh} />
         }
+        onEndReached={loadMoreDeliveries}
+        onEndReachedThreshold={0.3}
+        ListFooterComponent={renderFooter}
         ListEmptyComponent={
           <View style={styles.emptyState}>
             <Ionicons name="car-outline" size={48} color={colors.textSecondary} />
@@ -627,4 +683,15 @@ const styles = StyleSheet.create({
   },
   paymentTypeText: { fontSize: fontSize.sm, color: colors.text, textAlign: 'center' },
   paymentTypeTextSelected: { color: '#fff' },
+  loadingFooter: {
+    flexDirection: 'row',
+    justifyContent: 'center',
+    alignItems: 'center',
+    paddingVertical: spacing.md,
+    gap: spacing.sm,
+  },
+  loadingText: {
+    fontSize: fontSize.sm,
+    color: colors.textSecondary,
+  },
 });

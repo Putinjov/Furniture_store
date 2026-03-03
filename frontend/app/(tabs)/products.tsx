@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useCallback } from 'react';
+import React, { useEffect, useState, useCallback, useRef } from 'react';
 import {
   View,
   Text,
@@ -11,6 +11,7 @@ import {
   ScrollView,
   KeyboardAvoidingView,
   Platform,
+  ActivityIndicator,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
@@ -51,6 +52,8 @@ interface Service {
   base_price: number;
 }
 
+const PAGE_SIZE = 20;
+
 export default function ProductsScreen() {
   const { user } = useAuthStore();
   const [activeTab, setActiveTab] = useState<'products' | 'services' | 'categories'>('products');
@@ -62,6 +65,18 @@ export default function ProductsScreen() {
   const [modalType, setModalType] = useState<'product' | 'service' | 'category'>('product');
   const [loading, setLoading] = useState(false);
   const [editingItem, setEditingItem] = useState<any>(null);
+
+  // Pagination state for products
+  const [loadingMoreProducts, setLoadingMoreProducts] = useState(false);
+  const [hasMoreProducts, setHasMoreProducts] = useState(true);
+  const productsSkipRef = useRef(0);
+  const productsLoadingRef = useRef(false);
+
+  // Pagination state for services
+  const [loadingMoreServices, setLoadingMoreServices] = useState(false);
+  const [hasMoreServices, setHasMoreServices] = useState(true);
+  const servicesSkipRef = useRef(0);
+  const servicesLoadingRef = useRef(false);
 
   // Form states
   const [formName, setFormName] = useState('');
@@ -75,29 +90,106 @@ export default function ProductsScreen() {
 
   const canEdit = user?.role === 'owner' || user?.role === 'manager';
 
-  const fetchData = useCallback(async () => {
+  const fetchCategories = useCallback(async () => {
     try {
-      const [productsRes, servicesRes, categoriesRes] = await Promise.all([
-        api.get('/products'),
-        api.get('/services'),
-        api.get('/categories'),
-      ]);
-      setProducts(productsRes.data);
-      setServices(servicesRes.data);
+      const categoriesRes = await api.get('/categories');
       setCategories(categoriesRes.data);
     } catch (error) {
-      console.error('Fetch error:', error);
+      console.error('Fetch categories error:', error);
+    }
+  }, []);
+
+  const fetchProducts = useCallback(async (skip: number = 0, isRefresh: boolean = false) => {
+    if (productsLoadingRef.current && !isRefresh) return;
+
+    productsLoadingRef.current = true;
+    if (skip > 0) setLoadingMoreProducts(true);
+
+    try {
+      const response = await api.get(`/products?skip=${skip}&limit=${PAGE_SIZE}`);
+      const newProducts = response.data;
+
+      if (newProducts.length < PAGE_SIZE) {
+        setHasMoreProducts(false);
+      }
+
+      if (isRefresh || skip === 0) {
+        setProducts(newProducts);
+        productsSkipRef.current = newProducts.length;
+      } else {
+        setProducts(prev => [...prev, ...newProducts]);
+        productsSkipRef.current += newProducts.length;
+      }
+    } catch (error) {
+      console.error('Fetch products error:', error);
+    } finally {
+      setLoadingMoreProducts(false);
+      productsLoadingRef.current = false;
+    }
+  }, []);
+
+  const fetchServices = useCallback(async (skip: number = 0, isRefresh: boolean = false) => {
+    if (servicesLoadingRef.current && !isRefresh) return;
+
+    servicesLoadingRef.current = true;
+    if (skip > 0) setLoadingMoreServices(true);
+
+    try {
+      const response = await api.get(`/services?skip=${skip}&limit=${PAGE_SIZE}`);
+      const newServices = response.data;
+
+      if (newServices.length < PAGE_SIZE) {
+        setHasMoreServices(false);
+      }
+
+      if (isRefresh || skip === 0) {
+        setServices(newServices);
+        servicesSkipRef.current = newServices.length;
+      } else {
+        setServices(prev => [...prev, ...newServices]);
+        servicesSkipRef.current += newServices.length;
+      }
+    } catch (error) {
+      console.error('Fetch services error:', error);
+    } finally {
+      setLoadingMoreServices(false);
+      servicesLoadingRef.current = false;
     }
   }, []);
 
   useEffect(() => {
-    fetchData();
-  }, [fetchData]);
+    fetchCategories();
+    fetchProducts(0, true);
+    fetchServices(0, true);
+  }, [fetchCategories, fetchProducts, fetchServices]);
 
   const onRefresh = async () => {
     setRefreshing(true);
-    await fetchData();
+    
+    // Reset pagination
+    productsSkipRef.current = 0;
+    servicesSkipRef.current = 0;
+    setHasMoreProducts(true);
+    setHasMoreServices(true);
+    
+    await Promise.all([
+      fetchCategories(),
+      fetchProducts(0, true),
+      fetchServices(0, true),
+    ]);
     setRefreshing(false);
+  };
+
+  const loadMoreProducts = () => {
+    if (!loadingMoreProducts && hasMoreProducts && !productsLoadingRef.current) {
+      fetchProducts(productsSkipRef.current);
+    }
+  };
+
+  const loadMoreServices = () => {
+    if (!loadingMoreServices && hasMoreServices && !servicesLoadingRef.current) {
+      fetchServices(servicesSkipRef.current);
+    }
   };
 
   const resetForm = () => {
@@ -186,7 +278,7 @@ export default function ProductsScreen() {
       Alert.alert('Success', `${modalType.charAt(0).toUpperCase() + modalType.slice(1)} saved successfully`);
       setShowModal(false);
       resetForm();
-      fetchData();
+      onRefresh();
     } catch (error: any) {
       Alert.alert('Error', error.response?.data?.detail || 'Failed to save');
     } finally {
@@ -206,7 +298,7 @@ export default function ProductsScreen() {
           onPress: async () => {
             try {
               await api.delete(`/${type}s/${id}`);
-              fetchData();
+              onRefresh();
             } catch (error: any) {
               Alert.alert('Error', error.response?.data?.detail || 'Failed to delete');
             }
@@ -295,6 +387,25 @@ export default function ProductsScreen() {
     return `${action} ${modalType.charAt(0).toUpperCase() + modalType.slice(1)}`;
   };
 
+  const renderFooter = () => {
+    const isLoading = activeTab === 'products' ? loadingMoreProducts : activeTab === 'services' ? loadingMoreServices : false;
+    if (!isLoading) return null;
+    return (
+      <View style={styles.loadingFooter}>
+        <ActivityIndicator size="small" color={colors.primary} />
+        <Text style={styles.loadingText}>Loading more...</Text>
+      </View>
+    );
+  };
+
+  const handleEndReached = () => {
+    if (activeTab === 'products') {
+      loadMoreProducts();
+    } else if (activeTab === 'services') {
+      loadMoreServices();
+    }
+  };
+
   return (
     <SafeAreaView style={styles.container}>
       <View style={styles.header}>
@@ -329,6 +440,9 @@ export default function ProductsScreen() {
         keyExtractor={(item) => item.id}
         contentContainerStyle={styles.listContent}
         refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} />}
+        onEndReached={handleEndReached}
+        onEndReachedThreshold={0.3}
+        ListFooterComponent={renderFooter}
         ListEmptyComponent={
           <View style={styles.emptyState}>
             <Ionicons name="cube-outline" size={48} color={colors.textSecondary} />
@@ -508,4 +622,15 @@ const styles = StyleSheet.create({
     marginBottom: spacing.md,
   },
   picker: { height: 50 },
+  loadingFooter: {
+    flexDirection: 'row',
+    justifyContent: 'center',
+    alignItems: 'center',
+    paddingVertical: spacing.md,
+    gap: spacing.sm,
+  },
+  loadingText: {
+    fontSize: fontSize.sm,
+    color: colors.textSecondary,
+  },
 });

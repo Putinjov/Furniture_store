@@ -549,8 +549,12 @@ async def create_user(user_data: UserCreate, current_user: dict = Depends(requir
     )
 
 @api_router.get("/users", response_model=List[UserResponse])
-async def get_users(current_user: dict = Depends(require_roles([UserRole.OWNER, UserRole.MANAGER]))):
-    users = await db.users.find().to_list(1000)
+async def get_users(
+    skip: int = 0,
+    limit: int = 100,
+    current_user: dict = Depends(require_roles([UserRole.OWNER, UserRole.MANAGER]))
+):
+    users = await db.users.find({}, {"password": 0}).skip(skip).limit(limit).to_list(limit)
     return [
         UserResponse(
             id=str(u["_id"]),
@@ -638,8 +642,12 @@ async def create_category(category_data: CategoryCreate, current_user: dict = De
     )
 
 @api_router.get("/categories", response_model=List[CategoryResponse])
-async def get_categories(current_user: dict = Depends(get_current_user)):
-    categories = await db.categories.find().to_list(1000)
+async def get_categories(
+    skip: int = 0,
+    limit: int = 100,
+    current_user: dict = Depends(get_current_user)
+):
+    categories = await db.categories.find().skip(skip).limit(limit).to_list(limit)
     return [
         CategoryResponse(
             id=str(c["_id"]),
@@ -712,6 +720,8 @@ async def create_product(product_data: ProductCreate, current_user: dict = Depen
 async def get_products(
     category_id: Optional[str] = None,
     status: Optional[ProductStatus] = None,
+    skip: int = 0,
+    limit: int = 100,
     current_user: dict = Depends(get_current_user)
 ):
     query = {}
@@ -720,7 +730,7 @@ async def get_products(
     if status:
         query["status"] = status.value
     
-    products = await db.products.find(query).to_list(1000)
+    products = await db.products.find(query).skip(skip).limit(limit).to_list(limit)
     
     # Get category names
     category_ids = list(set(p["category_id"] for p in products))
@@ -820,8 +830,12 @@ async def create_service(service_data: ServiceCreate, current_user: dict = Depen
     )
 
 @api_router.get("/services", response_model=List[ServiceResponse])
-async def get_services(current_user: dict = Depends(get_current_user)):
-    services = await db.services.find().to_list(1000)
+async def get_services(
+    skip: int = 0,
+    limit: int = 100,
+    current_user: dict = Depends(get_current_user)
+):
+    services = await db.services.find().skip(skip).limit(limit).to_list(limit)
     return [
         ServiceResponse(
             id=str(s["_id"]),
@@ -1027,6 +1041,8 @@ async def get_orders(
     status: Optional[OrderStatus] = None,
     payment_status: Optional[PaymentStatus] = None,
     seller_id: Optional[str] = None,
+    skip: int = 0,
+    limit: int = 100,
     current_user: dict = Depends(get_current_user)
 ):
     query = {}
@@ -1042,7 +1058,7 @@ async def get_orders(
     if payment_status:
         query["payment_status"] = payment_status.value
     
-    orders = await db.orders.find(query).sort("created_at", -1).to_list(1000)
+    orders = await db.orders.find(query).sort("created_at", -1).skip(skip).limit(limit).to_list(limit)
     
     return [
         OrderResponse(
@@ -1299,14 +1315,18 @@ async def get_payment_types(current_user: dict = Depends(get_current_user)):
 # ================== DELIVERY ROUTES (Driver) ==================
 
 @api_router.get("/deliveries", response_model=List[DeliveryResponse])
-async def get_deliveries(current_user: dict = Depends(get_current_user)):
+async def get_deliveries(
+    skip: int = 0,
+    limit: int = 100,
+    current_user: dict = Depends(get_current_user)
+):
     query = {}
     
     # Drivers can only see their own deliveries
     if current_user["role"] == UserRole.DRIVER.value:
         query["driver_id"] = str(current_user["_id"])
     
-    deliveries = await db.deliveries.find(query).sort("assigned_at", -1).to_list(1000)
+    deliveries = await db.deliveries.find(query).sort("assigned_at", -1).skip(skip).limit(limit).to_list(limit)
     
     return [
         DeliveryResponse(
