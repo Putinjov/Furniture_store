@@ -357,7 +357,9 @@ export default function DeliveriesScreen() {
                       </View>
                     </View>
                     
-                    {selectedOrder.total - selectedOrder.amount_paid > 0 && (
+                    {selectedOrder.total - selectedOrder.amount_paid > 0 &&
+                      selectedOrder.status !== 'cancelled' &&
+                      selectedOrder.status !== 'completed' && (
                       <Button
                         title="Record Payment"
                         onPress={() => setShowPaymentModal(true)}
