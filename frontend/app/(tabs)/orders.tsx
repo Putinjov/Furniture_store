@@ -40,7 +40,10 @@ interface Order {
   services: Array<{
     service_id: string;
     service_name: string;
-    price: number;
+    service_type: string;
+    base_price: number;
+    calculated_price: number;
+    quantity: number;
   }>;
   subtotal: number;
   discount_percent: number;
@@ -66,12 +69,19 @@ interface Product {
 interface Service {
   id: string;
   name: string;
-  price: number;
+  description?: string;
+  service_type: string;
+  base_price: number;
 }
 
 interface Driver {
   id: string;
   name: string;
+}
+
+interface SelectedService {
+  service: Service;
+  quantity: number;
 }
 
 export default function OrdersScreen() {
@@ -91,7 +101,7 @@ export default function OrdersScreen() {
   const [customerPhone, setCustomerPhone] = useState('');
   const [customerAddress, setCustomerAddress] = useState('');
   const [selectedProducts, setSelectedProducts] = useState<{product: Product, quantity: number}[]>([]);
-  const [selectedServices, setSelectedServices] = useState<Service[]>([]);
+  const [selectedServices, setSelectedServices] = useState<SelectedService[]>([]);
   const [discount, setDiscount] = useState('0');
   const [comments, setComments] = useState('');
 
@@ -108,7 +118,7 @@ export default function OrdersScreen() {
 
       if (user?.role === 'owner' || user?.role === 'manager') {
         try {
-          const driversRes = await api.get('/users/drivers');
+          const driversRes = await api.get('/drivers');
           setDrivers(driversRes.data);
         } catch {}
       }
@@ -137,6 +147,22 @@ export default function OrdersScreen() {
     setComments('');
   };
 
+  // Calculate assembly price based on total items
+  const calculateAssemblyPrice = (totalItems: number): number => {
+    if (totalItems <= 0) return 0;
+    const groups = Math.floor((totalItems - 1) / 3);
+    return 50 * Math.pow(2, groups);
+  };
+
+  // Calculate total service price
+  const calculateServicePrice = (service: Service, totalItems: number, quantity: number): number => {
+    if (service.service_type === 'assembly') {
+      return calculateAssemblyPrice(totalItems);
+    }
+    // For delivery and takeaway services, multiply by quantity
+    return service.base_price * quantity;
+  };
+
   const handleCreateOrder = async () => {
     if (!customerName.trim() || !customerPhone.trim() || !customerAddress.trim()) {
       Alert.alert('Error', 'Please fill in all customer details');
@@ -149,6 +175,8 @@ export default function OrdersScreen() {
 
     setLoading(true);
     try {
+      const totalItems = selectedProducts.reduce((sum, sp) => sum + sp.quantity, 0);
+      
       const orderData = {
         customer: {
           name: customerName,
@@ -162,10 +190,13 @@ export default function OrdersScreen() {
           unit_price: sp.product.price,
           total_price: sp.product.price * sp.quantity,
         })),
-        services: selectedServices.map(s => ({
-          service_id: s.id,
-          service_name: s.name,
-          price: s.price,
+        services: selectedServices.map(ss => ({
+          service_id: ss.service.id,
+          service_name: ss.service.name,
+          service_type: ss.service.service_type,
+          base_price: ss.service.base_price,
+          calculated_price: calculateServicePrice(ss.service, totalItems, ss.quantity),
+          quantity: ss.quantity,
         })),
         discount_percent: parseFloat(discount) || 0,
         seller_comments: comments,
@@ -234,19 +265,46 @@ export default function OrdersScreen() {
   };
 
   const toggleService = (service: Service) => {
-    if (selectedServices.find(s => s.id === service.id)) {
-      setSelectedServices(prev => prev.filter(s => s.id !== service.id));
+    const existing = selectedServices.find(ss => ss.service.id === service.id);
+    if (existing) {
+      setSelectedServices(prev => prev.filter(ss => ss.service.id !== service.id));
     } else {
-      setSelectedServices(prev => [...prev, service]);
+      setSelectedServices(prev => [...prev, { service, quantity: 1 }]);
     }
+  };
+
+  const updateServiceQuantity = (serviceId: string, delta: number) => {
+    setSelectedServices(prev =>
+      prev.map(ss =>
+        ss.service.id === serviceId
+          ? { ...ss, quantity: Math.max(1, ss.quantity + delta) }
+          : ss
+      )
+    );
   };
 
   const calculateTotal = () => {
     const productsTotal = selectedProducts.reduce((sum, sp) => sum + sp.product.price * sp.quantity, 0);
-    const servicesTotal = selectedServices.reduce((sum, s) => sum + s.price, 0);
+    const totalItems = selectedProducts.reduce((sum, sp) => sum + sp.quantity, 0);
+    
+    const servicesTotal = selectedServices.reduce((sum, ss) => {
+      return sum + calculateServicePrice(ss.service, totalItems, ss.quantity);
+    }, 0);
+    
     const subtotal = productsTotal + servicesTotal;
     const discountAmount = subtotal * (parseFloat(discount) || 0) / 100;
     return subtotal - discountAmount;
+  };
+
+  const getServicePriceDisplay = (service: Service) => {
+    if (service.service_type === 'assembly') {
+      return '€50+ (based on items)';
+    }
+    if (service.base_price === 0) {
+      return 'FREE';
+    }
+    const isTakeaway = service.service_type.startsWith('takeaway');
+    return `€${service.base_price}${isTakeaway ? '/each' : ''}`;
   };
 
   const renderOrderItem = ({ item }: { item: Order }) => (
@@ -273,6 +331,11 @@ export default function OrdersScreen() {
       </View>
     </Card>
   );
+
+  // Group services by type for better UX
+  const assemblyServices = services.filter(s => s.service_type === 'assembly');
+  const deliveryServices = services.filter(s => s.service_type === 'delivery');
+  const takeawayServices = services.filter(s => s.service_type.startsWith('takeaway'));
 
   return (
     <SafeAreaView style={styles.container}>
@@ -354,22 +417,98 @@ export default function OrdersScreen() {
                 </View>
               )}
 
-              <Text style={styles.sectionTitle}>Services (Optional)</Text>
-              <View style={styles.servicesGrid}>
-                {services.map(service => (
-                  <TouchableOpacity
-                    key={service.id}
-                    style={[
-                      styles.serviceChip,
-                      selectedServices.find(s => s.id === service.id) && styles.serviceChipSelected,
-                    ]}
-                    onPress={() => toggleService(service)}
-                  >
-                    <Text style={styles.serviceChipText}>{service.name}</Text>
-                    <Text style={styles.serviceChipPrice}>€{service.price}</Text>
-                  </TouchableOpacity>
-                ))}
-              </View>
+              {/* Assembly Service */}
+              {assemblyServices.length > 0 && (
+                <>
+                  <Text style={styles.sectionTitle}>Assembly Service</Text>
+                  <Text style={styles.sectionHint}>€50 for first 3 pieces, doubles for each additional 3</Text>
+                  <View style={styles.servicesGrid}>
+                    {assemblyServices.map(service => (
+                      <TouchableOpacity
+                        key={service.id}
+                        style={[
+                          styles.serviceChip,
+                          selectedServices.find(ss => ss.service.id === service.id) && styles.serviceChipSelected,
+                        ]}
+                        onPress={() => toggleService(service)}
+                      >
+                        <Text style={styles.serviceChipText}>{service.name}</Text>
+                        <Text style={styles.serviceChipPrice}>
+                          {selectedProducts.length > 0 
+                            ? `€${calculateAssemblyPrice(selectedProducts.reduce((s, p) => s + p.quantity, 0))}`
+                            : '€50+'}
+                        </Text>
+                      </TouchableOpacity>
+                    ))}
+                  </View>
+                </>
+              )}
+
+              {/* Delivery Service */}
+              {deliveryServices.length > 0 && (
+                <>
+                  <Text style={styles.sectionTitle}>Delivery</Text>
+                  <View style={styles.servicesGrid}>
+                    {deliveryServices.map(service => (
+                      <TouchableOpacity
+                        key={service.id}
+                        style={[
+                          styles.serviceChip,
+                          selectedServices.find(ss => ss.service.id === service.id) && styles.serviceChipSelected,
+                        ]}
+                        onPress={() => toggleService(service)}
+                      >
+                        <Text style={styles.serviceChipText}>{service.name}</Text>
+                        <Text style={styles.serviceChipPrice}>{getServicePriceDisplay(service)}</Text>
+                      </TouchableOpacity>
+                    ))}
+                  </View>
+                </>
+              )}
+
+              {/* Takeaway Services */}
+              {takeawayServices.length > 0 && (
+                <>
+                  <Text style={styles.sectionTitle}>Take Away Old Furniture</Text>
+                  <View style={styles.servicesGrid}>
+                    {takeawayServices.map(service => {
+                      const selected = selectedServices.find(ss => ss.service.id === service.id);
+                      return (
+                        <View key={service.id} style={styles.takeawayRow}>
+                          <TouchableOpacity
+                            style={[
+                              styles.serviceChip,
+                              styles.takeawayChip,
+                              selected && styles.serviceChipSelected,
+                            ]}
+                            onPress={() => toggleService(service)}
+                          >
+                            <Text style={styles.serviceChipText}>{service.name}</Text>
+                            <Text style={styles.serviceChipPrice}>€{service.base_price}/each</Text>
+                          </TouchableOpacity>
+                          {selected && (
+                            <View style={styles.quantityControl}>
+                              <TouchableOpacity 
+                                style={styles.qtyBtn}
+                                onPress={() => updateServiceQuantity(service.id, -1)}
+                              >
+                                <Ionicons name="remove" size={16} color={colors.primary} />
+                              </TouchableOpacity>
+                              <Text style={styles.qtyText}>{selected.quantity}</Text>
+                              <TouchableOpacity 
+                                style={styles.qtyBtn}
+                                onPress={() => updateServiceQuantity(service.id, 1)}
+                              >
+                                <Ionicons name="add" size={16} color={colors.primary} />
+                              </TouchableOpacity>
+                            </View>
+                          )}
+                        </View>
+                      );
+                    })}
+                  </View>
+                </>
+              )}
 
               <Input
                 label="Discount %"
@@ -434,9 +573,12 @@ export default function OrdersScreen() {
                   ))}
                   {selectedOrder.services.map((service, idx) => (
                     <View key={`service-${idx}`} style={styles.itemRow}>
-                      <Text style={styles.itemName}>{service.service_name}</Text>
+                      <Text style={styles.itemName}>
+                        {service.service_name}
+                        {service.quantity > 1 ? ` x${service.quantity}` : ''}
+                      </Text>
                       <Text style={styles.itemQty}>Service</Text>
-                      <Text style={styles.itemPrice}>€{service.price.toFixed(2)}</Text>
+                      <Text style={styles.itemPrice}>€{service.calculated_price.toFixed(2)}</Text>
                     </View>
                   ))}
                   <View style={styles.totalRow}>
@@ -565,6 +707,11 @@ const styles = StyleSheet.create({
     marginTop: spacing.md,
     marginBottom: spacing.sm,
   },
+  sectionHint: {
+    fontSize: fontSize.xs,
+    color: colors.textSecondary,
+    marginBottom: spacing.sm,
+  },
   productScroll: { marginBottom: spacing.md },
   productChip: {
     backgroundColor: colors.surface,
@@ -597,10 +744,39 @@ const styles = StyleSheet.create({
     borderRadius: borderRadius.md,
     borderWidth: 1,
     borderColor: colors.border,
+    minWidth: 100,
   },
   serviceChipSelected: { borderColor: colors.success, backgroundColor: colors.success + '10' },
   serviceChipText: { fontSize: fontSize.sm, color: colors.text },
   serviceChipPrice: { fontSize: fontSize.xs, color: colors.success, fontWeight: '600' },
+  takeawayRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    width: '100%',
+    gap: spacing.sm,
+  },
+  takeawayChip: {
+    flex: 1,
+  },
+  quantityControl: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: colors.surface,
+    borderRadius: borderRadius.md,
+    borderWidth: 1,
+    borderColor: colors.border,
+    padding: spacing.xs,
+  },
+  qtyBtn: {
+    padding: spacing.xs,
+  },
+  qtyText: {
+    fontSize: fontSize.md,
+    fontWeight: '600',
+    color: colors.text,
+    minWidth: 24,
+    textAlign: 'center',
+  },
   totalSection: {
     flexDirection: 'row',
     justifyContent: 'space-between',

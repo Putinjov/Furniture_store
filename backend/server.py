@@ -158,11 +158,25 @@ class ProductResponse(ProductBase):
     created_at: datetime
     updated_at: datetime
 
+# Service Types Enum
+class ServiceType(str, Enum):
+    ASSEMBLY = "assembly"
+    DELIVERY = "delivery"
+    TAKEAWAY_MATTRESS_SMALL = "takeaway_mattress_small"
+    TAKEAWAY_MATTRESS_BIG = "takeaway_mattress_big"
+    TAKEAWAY_SOFA = "takeaway_sofa"
+
+class DeliveryZone(str, Enum):
+    LOCAL = "local"
+    MEDIUM = "medium"  # up to 80km
+    FAR = "far"  # beyond 80km
+
 # Service Models
 class ServiceBase(BaseModel):
     name: str
     description: Optional[str] = None
-    price: float
+    service_type: ServiceType
+    base_price: float
 
 class ServiceCreate(ServiceBase):
     pass
@@ -170,7 +184,7 @@ class ServiceCreate(ServiceBase):
 class ServiceUpdate(BaseModel):
     name: Optional[str] = None
     description: Optional[str] = None
-    price: Optional[float] = None
+    base_price: Optional[float] = None
 
 class ServiceResponse(ServiceBase):
     id: str
@@ -187,7 +201,11 @@ class OrderItem(BaseModel):
 class OrderServiceItem(BaseModel):
     service_id: str
     service_name: str
-    price: float
+    service_type: str
+    base_price: float
+    calculated_price: float
+    quantity: Optional[int] = 1
+    delivery_zone: Optional[str] = None  # For delivery service
 
 # Order Models
 class CustomerInfo(BaseModel):
@@ -354,6 +372,70 @@ async def startup_event():
         }
         await db.users.insert_one(admin_user)
         logger.info("Default super admin created: admin@store.com / admin123")
+    
+    # Create default services if none exist
+    services_count = await db.services.count_documents({})
+    if services_count == 0:
+        default_services = [
+            {
+                "_id": ObjectId(),
+                "name": "Assembly",
+                "description": "Furniture assembly service - €50 for first 3 pieces, doubles for each additional 3 pieces",
+                "service_type": ServiceType.ASSEMBLY.value,
+                "base_price": 50,
+                "created_at": datetime.utcnow()
+            },
+            {
+                "_id": ObjectId(),
+                "name": "Delivery - Local",
+                "description": "Free delivery for local area",
+                "service_type": ServiceType.DELIVERY.value,
+                "base_price": 0,
+                "created_at": datetime.utcnow()
+            },
+            {
+                "_id": ObjectId(),
+                "name": "Delivery - Up to 80km",
+                "description": "Delivery within 80km radius - €50",
+                "service_type": ServiceType.DELIVERY.value,
+                "base_price": 50,
+                "created_at": datetime.utcnow()
+            },
+            {
+                "_id": ObjectId(),
+                "name": "Delivery - Far (80km+)",
+                "description": "Delivery beyond 80km - €80",
+                "service_type": ServiceType.DELIVERY.value,
+                "base_price": 80,
+                "created_at": datetime.utcnow()
+            },
+            {
+                "_id": ObjectId(),
+                "name": "Take Away - Small Mattress",
+                "description": "Old small mattress removal - €40 each",
+                "service_type": ServiceType.TAKEAWAY_MATTRESS_SMALL.value,
+                "base_price": 40,
+                "created_at": datetime.utcnow()
+            },
+            {
+                "_id": ObjectId(),
+                "name": "Take Away - Big Mattress",
+                "description": "Old big mattress removal - €50 each",
+                "service_type": ServiceType.TAKEAWAY_MATTRESS_BIG.value,
+                "base_price": 50,
+                "created_at": datetime.utcnow()
+            },
+            {
+                "_id": ObjectId(),
+                "name": "Take Away - Old Sofa",
+                "description": "Old sofa removal - €75 each",
+                "service_type": ServiceType.TAKEAWAY_SOFA.value,
+                "base_price": 75,
+                "created_at": datetime.utcnow()
+            },
+        ]
+        await db.services.insert_many(default_services)
+        logger.info("Default services created")
 
 @app.on_event("shutdown")
 async def shutdown_db_client():
@@ -682,7 +764,8 @@ async def create_service(service_data: ServiceCreate, current_user: dict = Depen
         "_id": ObjectId(),
         "name": service_data.name,
         "description": service_data.description,
-        "price": service_data.price,
+        "service_type": service_data.service_type.value,
+        "base_price": service_data.base_price,
         "created_at": datetime.utcnow()
     }
     await db.services.insert_one(new_service)
@@ -691,7 +774,8 @@ async def create_service(service_data: ServiceCreate, current_user: dict = Depen
         id=str(new_service["_id"]),
         name=new_service["name"],
         description=new_service.get("description"),
-        price=new_service["price"],
+        service_type=new_service["service_type"],
+        base_price=new_service["base_price"],
         created_at=new_service["created_at"]
     )
 
@@ -703,7 +787,8 @@ async def get_services(current_user: dict = Depends(get_current_user)):
             id=str(s["_id"]),
             name=s["name"],
             description=s.get("description"),
-            price=s["price"],
+            service_type=s.get("service_type", "assembly"),
+            base_price=s.get("base_price", s.get("price", 0)),
             created_at=s["created_at"]
         ) for s in services
     ]
@@ -723,7 +808,8 @@ async def update_service(service_id: str, service_data: ServiceUpdate, current_u
         id=str(service["_id"]),
         name=service["name"],
         description=service.get("description"),
-        price=service["price"],
+        service_type=service.get("service_type", "assembly"),
+        base_price=service.get("base_price", service.get("price", 0)),
         created_at=service["created_at"]
     )
 
@@ -734,13 +820,75 @@ async def delete_service(service_id: str, current_user: dict = Depends(require_r
         raise HTTPException(status_code=404, detail="Service not found")
     return {"message": "Service deleted successfully"}
 
+# Helper to calculate service price based on order
+def calculate_service_price(service_type: str, base_price: float, total_items: int, delivery_zone: str = "local", quantity: int = 1) -> float:
+    """Calculate service price based on type and order details"""
+    if service_type == ServiceType.ASSEMBLY.value:
+        # €50 for first 3 items, doubles for each additional 3
+        if total_items <= 0:
+            return 0
+        groups = (total_items - 1) // 3  # How many complete groups of 3
+        price = base_price * (2 ** groups)
+        return price
+    
+    elif service_type == ServiceType.DELIVERY.value:
+        # Free for local, €50 for medium (80km), €80 for far
+        if delivery_zone == "local":
+            return 0
+        elif delivery_zone == "medium":
+            return 50
+        else:  # far
+            return 80
+    
+    elif service_type in [ServiceType.TAKEAWAY_MATTRESS_SMALL.value, 
+                          ServiceType.TAKEAWAY_MATTRESS_BIG.value,
+                          ServiceType.TAKEAWAY_SOFA.value]:
+        # Per item pricing
+        return base_price * quantity
+    
+    return base_price
+
 # ================== ORDER ROUTES ==================
 
 @api_router.post("/orders", response_model=OrderResponse)
 async def create_order(order_data: OrderCreate, current_user: dict = Depends(require_roles([UserRole.OWNER, UserRole.MANAGER, UserRole.SELLER]))):
     # Calculate totals
     subtotal = sum(item.total_price for item in order_data.items)
-    services_total = sum(s.price for s in order_data.services) if order_data.services else 0
+    total_items = sum(item.quantity for item in order_data.items)
+    
+    # Process services with calculated prices
+    processed_services = []
+    services_total = 0
+    
+    if order_data.services:
+        for service in order_data.services:
+            # Get service type info
+            service_doc = await db.services.find_one({"_id": ObjectId(service.service_id)})
+            if service_doc:
+                service_type = service_doc.get("service_type", "assembly")
+                base_price = service_doc.get("base_price", service.base_price)
+                
+                # Calculate price based on service type
+                if service_type == ServiceType.ASSEMBLY.value:
+                    calculated_price = calculate_service_price(service_type, base_price, total_items, quantity=1)
+                elif service_type == ServiceType.DELIVERY.value:
+                    # Use the delivery zone from service selection
+                    calculated_price = base_price  # Already set correctly in frontend
+                else:
+                    # Takeaway services - price per item
+                    calculated_price = base_price * (service.quantity or 1)
+                
+                processed_services.append({
+                    "service_id": service.service_id,
+                    "service_name": service.service_name,
+                    "service_type": service_type,
+                    "base_price": base_price,
+                    "calculated_price": calculated_price,
+                    "quantity": service.quantity or 1,
+                    "delivery_zone": service.delivery_zone
+                })
+                services_total += calculated_price
+    
     subtotal += services_total
     
     discount_amount = subtotal * (order_data.discount_percent / 100)
@@ -774,7 +922,7 @@ async def create_order(order_data: OrderCreate, current_user: dict = Depends(req
         "order_number": generate_order_number(),
         "customer": order_data.customer.dict(),
         "items": [item.dict() for item in order_data.items],
-        "services": [s.dict() for s in order_data.services] if order_data.services else [],
+        "services": processed_services,
         "subtotal": subtotal,
         "discount_percent": order_data.discount_percent,
         "discount_amount": discount_amount,
@@ -817,6 +965,21 @@ async def create_order(order_data: OrderCreate, current_user: dict = Depends(req
         updated_at=new_order["updated_at"]
     )
 
+def normalize_service(s: dict) -> dict:
+    """Convert old service format to new format for backward compatibility"""
+    if "calculated_price" not in s:
+        # Old format - convert to new
+        return {
+            "service_id": s.get("service_id", ""),
+            "service_name": s.get("service_name", ""),
+            "service_type": s.get("service_type", "assembly"),
+            "base_price": s.get("price", s.get("base_price", 0)),
+            "calculated_price": s.get("price", s.get("base_price", 0)),
+            "quantity": s.get("quantity", 1),
+            "delivery_zone": s.get("delivery_zone")
+        }
+    return s
+
 @api_router.get("/orders", response_model=List[OrderResponse])
 async def get_orders(
     status: Optional[OrderStatus] = None,
@@ -845,7 +1008,7 @@ async def get_orders(
             order_number=o["order_number"],
             customer=CustomerInfo(**o["customer"]),
             items=[OrderItem(**item) for item in o["items"]],
-            services=[OrderServiceItem(**s) for s in o.get("services", [])],
+            services=[OrderServiceItem(**normalize_service(s)) for s in o.get("services", [])],
             subtotal=o["subtotal"],
             discount_percent=o["discount_percent"],
             discount_amount=o["discount_amount"],
@@ -878,7 +1041,7 @@ async def get_order(order_id: str, current_user: dict = Depends(get_current_user
         order_number=order["order_number"],
         customer=CustomerInfo(**order["customer"]),
         items=[OrderItem(**item) for item in order["items"]],
-        services=[OrderServiceItem(**s) for s in order.get("services", [])],
+        services=[OrderServiceItem(**normalize_service(s)) for s in order.get("services", [])],
         subtotal=order["subtotal"],
         discount_percent=order["discount_percent"],
         discount_amount=order["discount_amount"],
@@ -1153,7 +1316,14 @@ async def get_order_receipt(order_id: str, current_user: dict = Depends(get_curr
         receipt_lines.append("-" * 40)
         receipt_lines.append("SERVICES:")
         for service in order["services"]:
-            receipt_lines.append(f"  {service['service_name']}: €{service['price']:.2f}")
+            # Handle both old and new service format
+            service_price = service.get('calculated_price', service.get('price', 0))
+            qty = service.get('quantity', 1)
+            service_name = service.get('service_name', 'Service')
+            if qty > 1:
+                receipt_lines.append(f"  {service_name} x{qty}: €{service_price:.2f}")
+            else:
+                receipt_lines.append(f"  {service_name}: €{service_price:.2f}")
     
     receipt_lines.extend([
         "-" * 40,
@@ -1177,7 +1347,7 @@ async def get_order_receipt(order_id: str, current_user: dict = Depends(get_curr
     return {"receipt": "\n".join(receipt_lines)}
 
 # Get drivers list for assignment
-@api_router.get("/users/drivers", response_model=List[UserResponse])
+@api_router.get("/drivers", response_model=List[UserResponse])
 async def get_drivers(current_user: dict = Depends(require_roles([UserRole.OWNER, UserRole.MANAGER]))):
     drivers = await db.users.find({"role": UserRole.DRIVER.value, "is_active": True}).to_list(100)
     return [
