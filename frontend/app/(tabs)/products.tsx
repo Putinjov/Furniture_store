@@ -47,7 +47,8 @@ interface Service {
   id: string;
   name: string;
   description?: string;
-  price: number;
+  service_type: string;
+  base_price: number;
 }
 
 export default function ProductsScreen() {
@@ -242,21 +243,37 @@ export default function ProductsScreen() {
     </Card>
   );
 
-  const renderService = ({ item }: { item: Service }) => (
-    <Card onPress={canEdit ? () => openModal('service', item) : undefined}>
-      <Text style={styles.productName}>{item.name}</Text>
-      {item.description && <Text style={styles.descText}>{item.description}</Text>}
-      <Text style={styles.productPrice}>€{item.price.toFixed(2)}</Text>
-      {canEdit && (
-        <TouchableOpacity
-          style={styles.deleteButton}
-          onPress={() => handleDelete('service', item.id)}
-        >
-          <Ionicons name="trash-outline" size={18} color={colors.danger} />
-        </TouchableOpacity>
-      )}
-    </Card>
-  );
+  const renderService = ({ item }: { item: Service }) => {
+    const getServiceTypeLabel = (type: string) => {
+      switch(type) {
+        case 'assembly': return 'Assembly';
+        case 'delivery': return 'Delivery';
+        case 'takeaway_mattress_small': return 'Takeaway - Small Mattress';
+        case 'takeaway_mattress_big': return 'Takeaway - Big Mattress';
+        case 'takeaway_sofa': return 'Takeaway - Sofa';
+        default: return type;
+      }
+    };
+    
+    const getPriceDisplay = () => {
+      if (item.service_type === 'assembly') {
+        return '€50+ (based on items)';
+      }
+      if (item.base_price === 0) {
+        return 'FREE';
+      }
+      return `€${item.base_price.toFixed(2)}`;
+    };
+    
+    return (
+      <Card>
+        <Text style={styles.productName}>{item.name}</Text>
+        <Text style={styles.serviceType}>{getServiceTypeLabel(item.service_type)}</Text>
+        {item.description && <Text style={styles.descText}>{item.description}</Text>}
+        <Text style={styles.productPrice}>{getPriceDisplay()}</Text>
+      </Card>
+    );
+  };
 
   const renderCategory = ({ item }: { item: Category }) => (
     <Card onPress={canEdit ? () => openModal('category', item) : undefined}>
@@ -456,6 +473,7 @@ const styles = StyleSheet.create({
   },
   productName: { fontSize: fontSize.lg, fontWeight: '600', color: colors.text },
   categoryText: { fontSize: fontSize.sm, color: colors.textSecondary, marginBottom: spacing.xs },
+  serviceType: { fontSize: fontSize.sm, color: colors.success, marginBottom: spacing.xs, fontWeight: '500' },
   descText: { fontSize: fontSize.sm, color: colors.textSecondary, marginVertical: spacing.xs },
   productMeta: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
   productPrice: { fontSize: fontSize.lg, fontWeight: '700', color: colors.primary },
