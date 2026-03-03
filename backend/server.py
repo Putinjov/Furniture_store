@@ -457,25 +457,19 @@ async def startup_event():
                 "base_price": 75,
                 "created_at": datetime.utcnow()
             },
-            {
-                "_id": ObjectId(),
-                "name": "Take Away - Contactless",
-                "description": "Contactless old furniture pickup - arranged separately",
-                "service_type": ServiceType.TAKEAWAY_MATTRESS_SMALL.value,
-                "base_price": 0,
-                "created_at": datetime.utcnow()
-            },
-            {
-                "_id": ObjectId(),
-                "name": "Take Away - Arrange via Phone",
-                "description": "Arrange old furniture pickup over phone",
-                "service_type": ServiceType.TAKEAWAY_MATTRESS_SMALL.value,
-                "base_price": 0,
-                "created_at": datetime.utcnow()
-            },
         ]
         await db.services.insert_many(default_services)
         logger.info("Default services created")
+
+    # Cleanup legacy takeaway service entries that should no longer be selectable
+    await db.services.delete_many({
+        "name": {
+            "$in": [
+                "Take Away - Contactless",
+                "Take Away - Arrange via Phone"
+            ]
+        }
+    })
 
 @app.on_event("shutdown")
 async def shutdown_db_client():
@@ -1189,6 +1183,9 @@ async def add_payment(order_id: str, payment_data: PaymentCreate, current_user: 
     order = await db.orders.find_one({"_id": ObjectId(order_id)})
     if not order:
         raise HTTPException(status_code=404, detail="Order not found")
+
+    if order.get("status") in [OrderStatus.CANCELLED.value, OrderStatus.COMPLETED.value]:
+        raise HTTPException(status_code=400, detail="Cannot record payment for cancelled or completed orders")
     
     role = current_user["role"]
     
