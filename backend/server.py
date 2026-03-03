@@ -76,6 +76,14 @@ class DeliveryStatus(str, Enum):
     DELIVERED = "delivered"
     FAILED = "failed"
 
+class PaymentType(str, Enum):
+    CASH = "cash"
+    CARD = "card"
+    CONTACTLESS = "contactless"  # Apple Pay, Google Pay
+    PHONE = "phone"  # Payment over phone
+    HUMM = "humm"  # Buy now pay later
+    REFUND = "refund"
+
 # ================== PYDANTIC MODELS ==================
 
 # User Models
@@ -207,6 +215,21 @@ class OrderServiceItem(BaseModel):
     quantity: Optional[int] = 1
     delivery_zone: Optional[str] = None  # For delivery service
 
+# Payment Record Models
+class PaymentRecord(BaseModel):
+    id: Optional[str] = None
+    amount: float
+    payment_type: PaymentType
+    notes: Optional[str] = None
+    recorded_by: Optional[str] = None
+    recorded_by_name: Optional[str] = None
+    recorded_at: Optional[datetime] = None
+
+class PaymentCreate(BaseModel):
+    amount: float
+    payment_type: PaymentType
+    notes: Optional[str] = None
+
 # Order Models
 class CustomerInfo(BaseModel):
     name: str
@@ -245,6 +268,7 @@ class OrderResponse(BaseModel):
     status: OrderStatus
     payment_status: PaymentStatus
     amount_paid: float
+    payments: Optional[List[PaymentRecord]] = []
     seller_id: str
     seller_name: str
     seller_comments: Optional[str] = None
@@ -930,6 +954,7 @@ async def create_order(order_data: OrderCreate, current_user: dict = Depends(req
         "status": order_status,
         "payment_status": order_data.payment_status.value,
         "amount_paid": order_data.amount_paid or 0,
+        "payments": [],
         "seller_id": str(current_user["_id"]),
         "seller_name": current_user["name"],
         "seller_comments": order_data.seller_comments,
@@ -956,6 +981,7 @@ async def create_order(order_data: OrderCreate, current_user: dict = Depends(req
         status=new_order["status"],
         payment_status=new_order["payment_status"],
         amount_paid=new_order["amount_paid"],
+        payments=[],
         seller_id=new_order["seller_id"],
         seller_name=new_order["seller_name"],
         seller_comments=new_order["seller_comments"],
@@ -1016,6 +1042,7 @@ async def get_orders(
             status=o["status"],
             payment_status=o["payment_status"],
             amount_paid=o["amount_paid"],
+            payments=[PaymentRecord(**p) for p in o.get("payments", [])],
             seller_id=o["seller_id"],
             seller_name=o["seller_name"],
             seller_comments=o.get("seller_comments"),
@@ -1049,6 +1076,7 @@ async def get_order(order_id: str, current_user: dict = Depends(get_current_user
         status=order["status"],
         payment_status=order["payment_status"],
         amount_paid=order["amount_paid"],
+        payments=[PaymentRecord(**p) for p in order.get("payments", [])],
         seller_id=order["seller_id"],
         seller_name=order["seller_name"],
         seller_comments=order.get("seller_comments"),
@@ -1120,6 +1148,137 @@ async def delete_order(order_id: str, current_user: dict = Depends(require_roles
     await log_action(str(current_user["_id"]), current_user["name"], "delete_order", "order", order_id)
     
     return {"message": "Order deleted successfully"}
+
+# ================== PAYMENT ROUTES ==================
+
+@api_router.post("/orders/{order_id}/payments", response_model=OrderResponse)
+async def add_payment(order_id: str, payment_data: PaymentCreate, current_user: dict = Depends(get_current_user)):
+    """Add a payment to an order. All roles can add payments but with different options."""
+    order = await db.orders.find_one({"_id": ObjectId(order_id)})
+    if not order:
+        raise HTTPException(status_code=404, detail="Order not found")
+    
+    role = current_user["role"]
+    
+    # Drivers can only mark as paid (no refunds, limited payment types)
+    if role == UserRole.DRIVER.value:
+        # Drivers can only update deliveries assigned to them
+        if order.get("driver_id") != str(current_user["_id"]):
+            raise HTTPException(status_code=403, detail="Access denied")
+        
+        # Drivers cannot do refunds
+        if payment_data.payment_type == PaymentType.REFUND:
+            raise HTTPException(status_code=403, detail="Drivers cannot process refunds")
+        
+        # Drivers can only use: cash, card, contactless
+        allowed_driver_types = [PaymentType.CASH, PaymentType.CARD, PaymentType.CONTACTLESS]
+        if payment_data.payment_type not in allowed_driver_types:
+            raise HTTPException(status_code=403, detail="Invalid payment type for driver")
+    
+    # Sellers can do everything except refunds (only managers/owners can refund)
+    if role == UserRole.SELLER.value:
+        if payment_data.payment_type == PaymentType.REFUND:
+            raise HTTPException(status_code=403, detail="Only managers or owners can process refunds")
+    
+    # Create payment record
+    payment_record = {
+        "id": str(ObjectId()),
+        "amount": payment_data.amount,
+        "payment_type": payment_data.payment_type.value,
+        "notes": payment_data.notes,
+        "recorded_by": str(current_user["_id"]),
+        "recorded_by_name": current_user["name"],
+        "recorded_at": datetime.utcnow()
+    }
+    
+    # Calculate new amount paid
+    current_payments = order.get("payments", [])
+    current_payments.append(payment_record)
+    
+    # For refunds, subtract from total paid
+    if payment_data.payment_type == PaymentType.REFUND:
+        new_amount_paid = order["amount_paid"] - abs(payment_data.amount)
+    else:
+        new_amount_paid = order["amount_paid"] + payment_data.amount
+    
+    # Determine payment status
+    if new_amount_paid <= 0:
+        new_payment_status = PaymentStatus.UNPAID.value
+    elif new_amount_paid >= order["total"]:
+        new_payment_status = PaymentStatus.PAID.value
+    else:
+        new_payment_status = PaymentStatus.PARTIALLY_PAID.value
+    
+    # Update order
+    await db.orders.update_one(
+        {"_id": ObjectId(order_id)},
+        {
+            "$set": {
+                "payments": current_payments,
+                "amount_paid": max(0, new_amount_paid),
+                "payment_status": new_payment_status,
+                "updated_at": datetime.utcnow()
+            }
+        }
+    )
+    
+    await log_action(
+        str(current_user["_id"]), 
+        current_user["name"], 
+        "add_payment", 
+        "order", 
+        order_id, 
+        {"amount": payment_data.amount, "type": payment_data.payment_type.value}
+    )
+    
+    # Return updated order
+    updated_order = await db.orders.find_one({"_id": ObjectId(order_id)})
+    return OrderResponse(
+        id=str(updated_order["_id"]),
+        order_number=updated_order["order_number"],
+        customer=CustomerInfo(**updated_order["customer"]),
+        items=[OrderItem(**item) for item in updated_order["items"]],
+        services=[OrderServiceItem(**normalize_service(s)) for s in updated_order.get("services", [])],
+        subtotal=updated_order["subtotal"],
+        discount_percent=updated_order["discount_percent"],
+        discount_amount=updated_order["discount_amount"],
+        total=updated_order["total"],
+        status=updated_order["status"],
+        payment_status=updated_order["payment_status"],
+        amount_paid=updated_order["amount_paid"],
+        payments=[PaymentRecord(**p) for p in updated_order.get("payments", [])],
+        seller_id=updated_order["seller_id"],
+        seller_name=updated_order["seller_name"],
+        seller_comments=updated_order.get("seller_comments"),
+        driver_id=updated_order.get("driver_id"),
+        driver_name=updated_order.get("driver_name"),
+        created_at=updated_order["created_at"],
+        updated_at=updated_order["updated_at"]
+    )
+
+@api_router.get("/payment-types")
+async def get_payment_types(current_user: dict = Depends(get_current_user)):
+    """Get available payment types based on user role"""
+    role = current_user["role"]
+    
+    all_types = [
+        {"value": "cash", "label": "Cash", "icon": "cash"},
+        {"value": "card", "label": "Card (with data)", "icon": "card"},
+        {"value": "contactless", "label": "Contactless / Apple Pay / Google Pay", "icon": "phone-portrait"},
+        {"value": "phone", "label": "Payment over Phone", "icon": "call"},
+        {"value": "humm", "label": "Humm (Buy Now Pay Later)", "icon": "time"},
+        {"value": "refund", "label": "Refund", "icon": "arrow-undo"},
+    ]
+    
+    if role == UserRole.DRIVER.value:
+        # Drivers can only use: cash, card, contactless
+        return [t for t in all_types if t["value"] in ["cash", "card", "contactless"]]
+    elif role == UserRole.SELLER.value:
+        # Sellers can use all except refund
+        return [t for t in all_types if t["value"] != "refund"]
+    else:
+        # Managers and owners can use all payment types
+        return all_types
 
 # ================== DELIVERY ROUTES (Driver) ==================
 

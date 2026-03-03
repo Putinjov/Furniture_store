@@ -10,6 +10,7 @@ import {
   Modal,
   ScrollView,
   Linking,
+  TextInput,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
@@ -17,7 +18,7 @@ import { Card } from '../../src/components/Card';
 import { Button } from '../../src/components/Button';
 import { StatusBadge } from '../../src/components/StatusBadge';
 import { useAuthStore } from '../../src/store/authStore';
-import { colors, spacing, fontSize } from '../../src/constants/theme';
+import { colors, spacing, fontSize, borderRadius } from '../../src/constants/theme';
 import api from '../../src/api/client';
 
 interface Delivery {
@@ -33,21 +34,46 @@ interface Delivery {
   updated_at: string;
 }
 
+interface Order {
+  id: string;
+  total: number;
+  amount_paid: number;
+  payment_status: string;
+}
+
+interface PaymentTypeOption {
+  value: string;
+  label: string;
+  icon: string;
+}
+
 export default function DeliveriesScreen() {
   const { user } = useAuthStore();
   const [deliveries, setDeliveries] = useState<Delivery[]>([]);
   const [refreshing, setRefreshing] = useState(false);
   const [showDetailModal, setShowDetailModal] = useState(false);
+  const [showPaymentModal, setShowPaymentModal] = useState(false);
   const [selectedDelivery, setSelectedDelivery] = useState<Delivery | null>(null);
+  const [selectedOrder, setSelectedOrder] = useState<Order | null>(null);
+  const [paymentTypes, setPaymentTypes] = useState<PaymentTypeOption[]>([]);
   const [loading, setLoading] = useState(false);
   const [notes, setNotes] = useState('');
+  
+  // Payment form state
+  const [paymentAmount, setPaymentAmount] = useState('');
+  const [paymentType, setPaymentType] = useState('');
+  const [paymentNotes, setPaymentNotes] = useState('');
 
   const isDriver = user?.role === 'driver';
 
   const fetchDeliveries = useCallback(async () => {
     try {
-      const response = await api.get('/deliveries');
-      setDeliveries(response.data);
+      const [deliveriesRes, paymentTypesRes] = await Promise.all([
+        api.get('/deliveries'),
+        api.get('/payment-types'),
+      ]);
+      setDeliveries(deliveriesRes.data);
+      setPaymentTypes(paymentTypesRes.data);
     } catch (error) {
       console.error('Fetch error:', error);
     }
@@ -61,6 +87,15 @@ export default function DeliveriesScreen() {
     setRefreshing(true);
     await fetchDeliveries();
     setRefreshing(false);
+  };
+
+  const fetchOrderDetails = async (orderId: string) => {
+    try {
+      const response = await api.get(`/orders/${orderId}`);
+      setSelectedOrder(response.data);
+    } catch (error) {
+      console.error('Error fetching order:', error);
+    }
   };
 
   const handleUpdateStatus = async (newStatus: string) => {
@@ -82,8 +117,57 @@ export default function DeliveriesScreen() {
     }
   };
 
+  const resetPaymentForm = () => {
+    setPaymentAmount('');
+    setPaymentType('');
+    setPaymentNotes('');
+  };
+
+  const handleAddPayment = async () => {
+    if (!selectedDelivery || !selectedOrder) return;
+    if (!paymentAmount || !paymentType) {
+      Alert.alert('Error', 'Please enter amount and select payment type');
+      return;
+    }
+
+    const amount = parseFloat(paymentAmount);
+    if (isNaN(amount) || amount <= 0) {
+      Alert.alert('Error', 'Please enter a valid amount');
+      return;
+    }
+
+    setLoading(true);
+    try {
+      await api.post(`/orders/${selectedDelivery.order_id}/payments`, {
+        amount: amount,
+        payment_type: paymentType,
+        notes: paymentNotes || undefined,
+      });
+      
+      Alert.alert('Success', 'Payment recorded successfully');
+      setShowPaymentModal(false);
+      resetPaymentForm();
+      
+      // Refresh order details
+      await fetchOrderDetails(selectedDelivery.order_id);
+    } catch (error: any) {
+      Alert.alert('Error', error.response?.data?.detail || 'Failed to record payment');
+    } finally {
+      setLoading(false);
+    }
+  };
+
   const callCustomer = (phone: string) => {
     Linking.openURL(`tel:${phone}`);
+  };
+
+  const getPaymentTypeIcon = (type: string): any => {
+    const icons: Record<string, string> = {
+      cash: 'cash',
+      card: 'card',
+      contactless: 'phone-portrait',
+    };
+    return icons[type] || 'cash';
   };
 
   const renderDelivery = ({ item }: { item: Delivery }) => (
@@ -91,6 +175,7 @@ export default function DeliveriesScreen() {
       onPress={() => {
         setSelectedDelivery(item);
         setNotes(item.notes || '');
+        fetchOrderDetails(item.order_id);
         setShowDetailModal(true);
       }}
     >
@@ -191,25 +276,69 @@ export default function DeliveriesScreen() {
                   <Text style={styles.addressText}>{selectedDelivery.customer_address}</Text>
                 </Card>
 
+                {/* Payment Section - Only for drivers */}
+                {isDriver && selectedOrder && (
+                  <Card title="Payment">
+                    <View style={styles.paymentInfo}>
+                      <View style={styles.paymentInfoRow}>
+                        <Text style={styles.paymentLabel}>Order Total:</Text>
+                        <Text style={styles.paymentValue}>€{selectedOrder.total.toFixed(2)}</Text>
+                      </View>
+                      <View style={styles.paymentInfoRow}>
+                        <Text style={styles.paymentLabel}>Already Paid:</Text>
+                        <Text style={[styles.paymentValue, { color: colors.success }]}>
+                          €{selectedOrder.amount_paid.toFixed(2)}
+                        </Text>
+                      </View>
+                      <View style={styles.paymentInfoRow}>
+                        <Text style={styles.paymentLabel}>To Collect:</Text>
+                        <Text style={[
+                          styles.paymentValue, 
+                          { color: selectedOrder.total - selectedOrder.amount_paid > 0 ? colors.danger : colors.success }
+                        ]}>
+                          €{Math.max(0, selectedOrder.total - selectedOrder.amount_paid).toFixed(2)}
+                        </Text>
+                      </View>
+                    </View>
+                    
+                    {selectedOrder.total - selectedOrder.amount_paid > 0 && (
+                      <Button
+                        title="Record Payment"
+                        onPress={() => setShowPaymentModal(true)}
+                        variant="success"
+                        icon={<Ionicons name="card" size={20} color="#fff" />}
+                        style={{ marginTop: spacing.md }}
+                      />
+                    )}
+                    
+                    {selectedOrder.payment_status === 'paid' && (
+                      <View style={styles.paidBadge}>
+                        <Ionicons name="checkmark-circle" size={20} color={colors.success} />
+                        <Text style={styles.paidText}>Fully Paid</Text>
+                      </View>
+                    )}
+                  </Card>
+                )}
+
                 {isDriver && selectedDelivery.status !== 'delivered' && selectedDelivery.status !== 'failed' && (
                   <Card title="Add Notes">
-                    <View style={styles.notesInput}>
+                    <TouchableOpacity 
+                      style={styles.notesInput}
+                      onPress={() => {
+                        Alert.prompt(
+                          'Delivery Notes',
+                          'Add any notes about this delivery',
+                          (text) => setNotes(text),
+                          'plain-text',
+                          notes
+                        );
+                      }}
+                    >
                       <Ionicons name="document-text-outline" size={20} color={colors.textSecondary} />
-                      <Text
-                        style={styles.notesPlaceholder}
-                        onPress={() => {
-                          Alert.prompt(
-                            'Delivery Notes',
-                            'Add any notes about this delivery',
-                            (text) => setNotes(text),
-                            'plain-text',
-                            notes
-                          );
-                        }}
-                      >
+                      <Text style={styles.notesPlaceholder}>
                         {notes || 'Tap to add notes...'}
                       </Text>
-                    </View>
+                    </TouchableOpacity>
                   </Card>
                 )}
 
@@ -244,6 +373,84 @@ export default function DeliveriesScreen() {
             )}
           </ScrollView>
         </SafeAreaView>
+      </Modal>
+
+      {/* Payment Modal for Driver */}
+      <Modal visible={showPaymentModal} animationType="slide" transparent>
+        <View style={styles.paymentModalOverlay}>
+          <View style={styles.paymentModalContent}>
+            <View style={styles.paymentModalHeader}>
+              <Text style={styles.paymentModalTitle}>Collect Payment</Text>
+              <TouchableOpacity onPress={() => { setShowPaymentModal(false); resetPaymentForm(); }}>
+                <Ionicons name="close" size={24} color={colors.text} />
+              </TouchableOpacity>
+            </View>
+
+            <View style={styles.paymentModalBody}>
+              {selectedOrder && (
+                <View style={styles.paymentBalanceInfo}>
+                  <Text style={styles.paymentBalanceLabel}>Amount to Collect:</Text>
+                  <Text style={styles.paymentBalanceValue}>
+                    €{Math.max(0, selectedOrder.total - selectedOrder.amount_paid).toFixed(2)}
+                  </Text>
+                </View>
+              )}
+
+              <Text style={styles.paymentInputLabel}>Amount (€)</Text>
+              <TextInput
+                style={styles.paymentInput}
+                value={paymentAmount}
+                onChangeText={setPaymentAmount}
+                keyboardType="decimal-pad"
+                placeholder="0.00"
+                placeholderTextColor={colors.textSecondary}
+              />
+
+              <Text style={styles.paymentInputLabel}>Payment Type</Text>
+              <View style={styles.paymentTypesGrid}>
+                {paymentTypes.map(type => (
+                  <TouchableOpacity
+                    key={type.value}
+                    style={[
+                      styles.paymentTypeChip,
+                      paymentType === type.value && styles.paymentTypeChipSelected,
+                    ]}
+                    onPress={() => setPaymentType(type.value)}
+                  >
+                    <Ionicons 
+                      name={getPaymentTypeIcon(type.value)} 
+                      size={24} 
+                      color={paymentType === type.value ? '#fff' : colors.text} 
+                    />
+                    <Text style={[
+                      styles.paymentTypeText,
+                      paymentType === type.value && styles.paymentTypeTextSelected,
+                    ]}>
+                      {type.label}
+                    </Text>
+                  </TouchableOpacity>
+                ))}
+              </View>
+
+              <Text style={styles.paymentInputLabel}>Notes (Optional)</Text>
+              <TextInput
+                style={[styles.paymentInput, styles.paymentNotesInput]}
+                value={paymentNotes}
+                onChangeText={setPaymentNotes}
+                placeholder="Add notes..."
+                placeholderTextColor={colors.textSecondary}
+                multiline
+              />
+
+              <Button
+                title="Confirm Payment"
+                onPress={handleAddPayment}
+                loading={loading}
+                variant="success"
+              />
+            </View>
+          </View>
+        </View>
       </Modal>
     </SafeAreaView>
   );
@@ -321,4 +528,103 @@ const styles = StyleSheet.create({
   notesText: { fontSize: fontSize.md, color: colors.text },
   actionButtons: { marginBottom: spacing.md },
   actionButton: { marginBottom: spacing.sm },
+  // Payment styles
+  paymentInfo: {
+    backgroundColor: colors.divider,
+    padding: spacing.md,
+    borderRadius: borderRadius.md,
+  },
+  paymentInfoRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    marginBottom: spacing.xs,
+  },
+  paymentLabel: { fontSize: fontSize.md, color: colors.textSecondary },
+  paymentValue: { fontSize: fontSize.md, fontWeight: '600', color: colors.text },
+  paidBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: spacing.sm,
+    marginTop: spacing.md,
+    padding: spacing.md,
+    backgroundColor: colors.success + '15',
+    borderRadius: borderRadius.md,
+  },
+  paidText: { fontSize: fontSize.md, fontWeight: '600', color: colors.success },
+  // Payment Modal
+  paymentModalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.5)',
+    justifyContent: 'flex-end',
+  },
+  paymentModalContent: {
+    backgroundColor: colors.surface,
+    borderTopLeftRadius: borderRadius.lg,
+    borderTopRightRadius: borderRadius.lg,
+    maxHeight: '70%',
+  },
+  paymentModalHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    padding: spacing.md,
+    borderBottomWidth: 1,
+    borderBottomColor: colors.border,
+  },
+  paymentModalTitle: { fontSize: fontSize.lg, fontWeight: '700', color: colors.text },
+  paymentModalBody: { padding: spacing.md },
+  paymentBalanceInfo: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    backgroundColor: colors.success + '15',
+    padding: spacing.md,
+    borderRadius: borderRadius.md,
+    marginBottom: spacing.md,
+  },
+  paymentBalanceLabel: { fontSize: fontSize.md, color: colors.text },
+  paymentBalanceValue: { fontSize: fontSize.xl, fontWeight: '700', color: colors.success },
+  paymentInputLabel: {
+    fontSize: fontSize.sm,
+    fontWeight: '500',
+    color: colors.text,
+    marginBottom: spacing.xs,
+    marginTop: spacing.sm,
+  },
+  paymentInput: {
+    backgroundColor: colors.background,
+    borderWidth: 1,
+    borderColor: colors.border,
+    borderRadius: borderRadius.md,
+    padding: spacing.md,
+    fontSize: fontSize.lg,
+    color: colors.text,
+  },
+  paymentNotesInput: {
+    height: 60,
+    textAlignVertical: 'top',
+    fontSize: fontSize.md,
+  },
+  paymentTypesGrid: {
+    flexDirection: 'row',
+    gap: spacing.sm,
+    marginBottom: spacing.md,
+  },
+  paymentTypeChip: {
+    flex: 1,
+    alignItems: 'center',
+    gap: spacing.xs,
+    backgroundColor: colors.background,
+    paddingVertical: spacing.md,
+    borderRadius: borderRadius.md,
+    borderWidth: 1,
+    borderColor: colors.border,
+  },
+  paymentTypeChipSelected: {
+    backgroundColor: colors.success,
+    borderColor: colors.success,
+  },
+  paymentTypeText: { fontSize: fontSize.sm, color: colors.text, textAlign: 'center' },
+  paymentTypeTextSelected: { color: '#fff' },
 });

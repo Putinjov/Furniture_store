@@ -11,6 +11,7 @@ import {
   ScrollView,
   KeyboardAvoidingView,
   Platform,
+  TextInput,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
@@ -21,6 +22,15 @@ import { StatusBadge } from '../../src/components/StatusBadge';
 import { useAuthStore } from '../../src/store/authStore';
 import { colors, spacing, fontSize, borderRadius } from '../../src/constants/theme';
 import api from '../../src/api/client';
+
+interface PaymentRecord {
+  id: string;
+  amount: number;
+  payment_type: string;
+  notes?: string;
+  recorded_by_name: string;
+  recorded_at: string;
+}
 
 interface Order {
   id: string;
@@ -52,6 +62,7 @@ interface Order {
   status: string;
   payment_status: string;
   amount_paid: number;
+  payments: PaymentRecord[];
   seller_name: string;
   seller_comments?: string;
   driver_name?: string;
@@ -79,6 +90,12 @@ interface Driver {
   name: string;
 }
 
+interface PaymentTypeOption {
+  value: string;
+  label: string;
+  icon: string;
+}
+
 interface SelectedService {
   service: Service;
   quantity: number;
@@ -90,9 +107,11 @@ export default function OrdersScreen() {
   const [products, setProducts] = useState<Product[]>([]);
   const [services, setServices] = useState<Service[]>([]);
   const [drivers, setDrivers] = useState<Driver[]>([]);
+  const [paymentTypes, setPaymentTypes] = useState<PaymentTypeOption[]>([]);
   const [refreshing, setRefreshing] = useState(false);
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [showDetailModal, setShowDetailModal] = useState(false);
+  const [showPaymentModal, setShowPaymentModal] = useState(false);
   const [selectedOrder, setSelectedOrder] = useState<Order | null>(null);
   const [loading, setLoading] = useState(false);
 
@@ -105,16 +124,23 @@ export default function OrdersScreen() {
   const [discount, setDiscount] = useState('0');
   const [comments, setComments] = useState('');
 
+  // Payment form state
+  const [paymentAmount, setPaymentAmount] = useState('');
+  const [paymentType, setPaymentType] = useState('');
+  const [paymentNotes, setPaymentNotes] = useState('');
+
   const fetchData = useCallback(async () => {
     try {
-      const [ordersRes, productsRes, servicesRes] = await Promise.all([
+      const [ordersRes, productsRes, servicesRes, paymentTypesRes] = await Promise.all([
         api.get('/orders'),
         api.get('/products'),
         api.get('/services'),
+        api.get('/payment-types'),
       ]);
       setOrders(ordersRes.data);
       setProducts(productsRes.data);
       setServices(servicesRes.data);
+      setPaymentTypes(paymentTypesRes.data);
 
       if (user?.role === 'owner' || user?.role === 'manager') {
         try {
@@ -147,6 +173,12 @@ export default function OrdersScreen() {
     setComments('');
   };
 
+  const resetPaymentForm = () => {
+    setPaymentAmount('');
+    setPaymentType('');
+    setPaymentNotes('');
+  };
+
   // Calculate assembly price based on total items
   const calculateAssemblyPrice = (totalItems: number): number => {
     if (totalItems <= 0) return 0;
@@ -159,7 +191,6 @@ export default function OrdersScreen() {
     if (service.service_type === 'assembly') {
       return calculateAssemblyPrice(totalItems);
     }
-    // For delivery and takeaway services, multiply by quantity
     return service.base_price * quantity;
   };
 
@@ -211,6 +242,39 @@ export default function OrdersScreen() {
       fetchData();
     } catch (error: any) {
       Alert.alert('Error', error.response?.data?.detail || 'Failed to create order');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleAddPayment = async () => {
+    if (!selectedOrder) return;
+    if (!paymentAmount || !paymentType) {
+      Alert.alert('Error', 'Please enter amount and select payment type');
+      return;
+    }
+
+    const amount = parseFloat(paymentAmount);
+    if (isNaN(amount) || amount <= 0) {
+      Alert.alert('Error', 'Please enter a valid amount');
+      return;
+    }
+
+    setLoading(true);
+    try {
+      const response = await api.post(`/orders/${selectedOrder.id}/payments`, {
+        amount: amount,
+        payment_type: paymentType,
+        notes: paymentNotes || undefined,
+      });
+      
+      setSelectedOrder(response.data);
+      Alert.alert('Success', 'Payment recorded successfully');
+      setShowPaymentModal(false);
+      resetPaymentForm();
+      fetchData();
+    } catch (error: any) {
+      Alert.alert('Error', error.response?.data?.detail || 'Failed to record payment');
     } finally {
       setLoading(false);
     }
@@ -305,6 +369,30 @@ export default function OrdersScreen() {
     }
     const isTakeaway = service.service_type.startsWith('takeaway');
     return `€${service.base_price}${isTakeaway ? '/each' : ''}`;
+  };
+
+  const getPaymentTypeLabel = (type: string) => {
+    const labels: Record<string, string> = {
+      cash: 'Cash',
+      card: 'Card',
+      contactless: 'Contactless',
+      phone: 'Phone',
+      humm: 'Humm',
+      refund: 'Refund',
+    };
+    return labels[type] || type;
+  };
+
+  const getPaymentTypeIcon = (type: string): any => {
+    const icons: Record<string, string> = {
+      cash: 'cash',
+      card: 'card',
+      contactless: 'phone-portrait',
+      phone: 'call',
+      humm: 'time',
+      refund: 'arrow-undo',
+    };
+    return icons[type] || 'cash';
   };
 
   const renderOrderItem = ({ item }: { item: Order }) => (
@@ -587,6 +675,67 @@ export default function OrdersScreen() {
                   </View>
                 </Card>
 
+                {/* Payment Summary */}
+                <Card title="Payment">
+                  <View style={styles.paymentSummary}>
+                    <View style={styles.paymentSummaryRow}>
+                      <Text style={styles.paymentSummaryLabel}>Total:</Text>
+                      <Text style={styles.paymentSummaryValue}>€{selectedOrder.total.toFixed(2)}</Text>
+                    </View>
+                    <View style={styles.paymentSummaryRow}>
+                      <Text style={styles.paymentSummaryLabel}>Paid:</Text>
+                      <Text style={[styles.paymentSummaryValue, { color: colors.success }]}>
+                        €{selectedOrder.amount_paid.toFixed(2)}
+                      </Text>
+                    </View>
+                    <View style={styles.paymentSummaryRow}>
+                      <Text style={styles.paymentSummaryLabel}>Balance:</Text>
+                      <Text style={[
+                        styles.paymentSummaryValue, 
+                        { color: selectedOrder.total - selectedOrder.amount_paid > 0 ? colors.danger : colors.success }
+                      ]}>
+                        €{Math.max(0, selectedOrder.total - selectedOrder.amount_paid).toFixed(2)}
+                      </Text>
+                    </View>
+                  </View>
+
+                  {/* Payment History */}
+                  {selectedOrder.payments && selectedOrder.payments.length > 0 && (
+                    <View style={styles.paymentHistory}>
+                      <Text style={styles.paymentHistoryTitle}>Payment History</Text>
+                      {selectedOrder.payments.map((payment, idx) => (
+                        <View key={idx} style={styles.paymentHistoryItem}>
+                          <View style={styles.paymentHistoryLeft}>
+                            <Ionicons 
+                              name={getPaymentTypeIcon(payment.payment_type)} 
+                              size={16} 
+                              color={payment.payment_type === 'refund' ? colors.danger : colors.success} 
+                            />
+                            <Text style={styles.paymentHistoryType}>
+                              {getPaymentTypeLabel(payment.payment_type)}
+                            </Text>
+                          </View>
+                          <Text style={[
+                            styles.paymentHistoryAmount,
+                            { color: payment.payment_type === 'refund' ? colors.danger : colors.success }
+                          ]}>
+                            {payment.payment_type === 'refund' ? '-' : '+'}€{payment.amount.toFixed(2)}
+                          </Text>
+                        </View>
+                      ))}
+                    </View>
+                  )}
+
+                  {/* Add Payment Button */}
+                  <Button
+                    title="Record Payment"
+                    onPress={() => setShowPaymentModal(true)}
+                    variant="success"
+                    icon={<Ionicons name="card" size={20} color="#fff" />}
+                    style={{ marginTop: spacing.md }}
+                  />
+                </Card>
+
                 {selectedOrder.seller_comments && (
                   <Card title="Seller Comments">
                     <Text style={styles.detailText}>{selectedOrder.seller_comments}</Text>
@@ -641,6 +790,86 @@ export default function OrdersScreen() {
             )}
           </ScrollView>
         </SafeAreaView>
+      </Modal>
+
+      {/* Payment Modal */}
+      <Modal visible={showPaymentModal} animationType="slide" transparent>
+        <View style={styles.paymentModalOverlay}>
+          <View style={styles.paymentModalContent}>
+            <View style={styles.paymentModalHeader}>
+              <Text style={styles.paymentModalTitle}>Record Payment</Text>
+              <TouchableOpacity onPress={() => { setShowPaymentModal(false); resetPaymentForm(); }}>
+                <Ionicons name="close" size={24} color={colors.text} />
+              </TouchableOpacity>
+            </View>
+
+            <View style={styles.paymentModalBody}>
+              {selectedOrder && (
+                <View style={styles.paymentBalanceInfo}>
+                  <Text style={styles.paymentBalanceLabel}>Balance Due:</Text>
+                  <Text style={styles.paymentBalanceValue}>
+                    €{Math.max(0, selectedOrder.total - selectedOrder.amount_paid).toFixed(2)}
+                  </Text>
+                </View>
+              )}
+
+              <Text style={styles.paymentInputLabel}>Amount (€)</Text>
+              <TextInput
+                style={styles.paymentInput}
+                value={paymentAmount}
+                onChangeText={setPaymentAmount}
+                keyboardType="decimal-pad"
+                placeholder="0.00"
+                placeholderTextColor={colors.textSecondary}
+              />
+
+              <Text style={styles.paymentInputLabel}>Payment Type</Text>
+              <View style={styles.paymentTypesGrid}>
+                {paymentTypes.map(type => (
+                  <TouchableOpacity
+                    key={type.value}
+                    style={[
+                      styles.paymentTypeChip,
+                      paymentType === type.value && styles.paymentTypeChipSelected,
+                      type.value === 'refund' && styles.paymentTypeRefund,
+                    ]}
+                    onPress={() => setPaymentType(type.value)}
+                  >
+                    <Ionicons 
+                      name={type.icon as any} 
+                      size={18} 
+                      color={paymentType === type.value ? '#fff' : type.value === 'refund' ? colors.danger : colors.text} 
+                    />
+                    <Text style={[
+                      styles.paymentTypeText,
+                      paymentType === type.value && styles.paymentTypeTextSelected,
+                      type.value === 'refund' && paymentType !== type.value && styles.paymentTypeRefundText,
+                    ]}>
+                      {type.label}
+                    </Text>
+                  </TouchableOpacity>
+                ))}
+              </View>
+
+              <Text style={styles.paymentInputLabel}>Notes (Optional)</Text>
+              <TextInput
+                style={[styles.paymentInput, styles.paymentNotesInput]}
+                value={paymentNotes}
+                onChangeText={setPaymentNotes}
+                placeholder="Add notes..."
+                placeholderTextColor={colors.textSecondary}
+                multiline
+              />
+
+              <Button
+                title={paymentType === 'refund' ? 'Process Refund' : 'Record Payment'}
+                onPress={handleAddPayment}
+                loading={loading}
+                variant={paymentType === 'refund' ? 'danger' : 'success'}
+              />
+            </View>
+          </View>
+        </View>
       </Modal>
     </SafeAreaView>
   );
@@ -819,4 +1048,118 @@ const styles = StyleSheet.create({
     marginBottom: spacing.xs,
   },
   driverName: { marginLeft: spacing.sm, fontSize: fontSize.md, color: colors.text },
+  // Payment styles
+  paymentSummary: {
+    backgroundColor: colors.divider,
+    padding: spacing.md,
+    borderRadius: borderRadius.md,
+    marginBottom: spacing.md,
+  },
+  paymentSummaryRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    marginBottom: spacing.xs,
+  },
+  paymentSummaryLabel: { fontSize: fontSize.md, color: colors.textSecondary },
+  paymentSummaryValue: { fontSize: fontSize.md, fontWeight: '600', color: colors.text },
+  paymentHistory: {
+    borderTopWidth: 1,
+    borderTopColor: colors.border,
+    paddingTop: spacing.md,
+  },
+  paymentHistoryTitle: { fontSize: fontSize.sm, fontWeight: '600', color: colors.text, marginBottom: spacing.sm },
+  paymentHistoryItem: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingVertical: spacing.xs,
+  },
+  paymentHistoryLeft: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.xs,
+  },
+  paymentHistoryType: { fontSize: fontSize.sm, color: colors.text },
+  paymentHistoryAmount: { fontSize: fontSize.sm, fontWeight: '600' },
+  // Payment Modal
+  paymentModalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.5)',
+    justifyContent: 'flex-end',
+  },
+  paymentModalContent: {
+    backgroundColor: colors.surface,
+    borderTopLeftRadius: borderRadius.lg,
+    borderTopRightRadius: borderRadius.lg,
+    maxHeight: '80%',
+  },
+  paymentModalHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    padding: spacing.md,
+    borderBottomWidth: 1,
+    borderBottomColor: colors.border,
+  },
+  paymentModalTitle: { fontSize: fontSize.lg, fontWeight: '700', color: colors.text },
+  paymentModalBody: { padding: spacing.md },
+  paymentBalanceInfo: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    backgroundColor: colors.primary + '10',
+    padding: spacing.md,
+    borderRadius: borderRadius.md,
+    marginBottom: spacing.md,
+  },
+  paymentBalanceLabel: { fontSize: fontSize.md, color: colors.text },
+  paymentBalanceValue: { fontSize: fontSize.xl, fontWeight: '700', color: colors.primary },
+  paymentInputLabel: {
+    fontSize: fontSize.sm,
+    fontWeight: '500',
+    color: colors.text,
+    marginBottom: spacing.xs,
+    marginTop: spacing.sm,
+  },
+  paymentInput: {
+    backgroundColor: colors.background,
+    borderWidth: 1,
+    borderColor: colors.border,
+    borderRadius: borderRadius.md,
+    padding: spacing.md,
+    fontSize: fontSize.lg,
+    color: colors.text,
+  },
+  paymentNotesInput: {
+    height: 80,
+    textAlignVertical: 'top',
+    fontSize: fontSize.md,
+  },
+  paymentTypesGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: spacing.sm,
+    marginBottom: spacing.md,
+  },
+  paymentTypeChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.xs,
+    backgroundColor: colors.background,
+    paddingHorizontal: spacing.md,
+    paddingVertical: spacing.sm,
+    borderRadius: borderRadius.md,
+    borderWidth: 1,
+    borderColor: colors.border,
+  },
+  paymentTypeChipSelected: {
+    backgroundColor: colors.success,
+    borderColor: colors.success,
+  },
+  paymentTypeRefund: {
+    borderColor: colors.danger,
+  },
+  paymentTypeText: { fontSize: fontSize.sm, color: colors.text },
+  paymentTypeTextSelected: { color: '#fff' },
+  paymentTypeRefundText: { color: colors.danger },
 });
