@@ -951,7 +951,7 @@ export default function OrdersScreen() {
                           style={styles.actionButton}
                         />
                       )}
-                      {selectedOrder.status !== 'cancelled' && selectedOrder.status !== 'completed' && drivers.length > 0 && (
+                      {selectedOrder.status === 'ready' && drivers.length > 0 && !selectedOrder.driver_id && (
                         <View style={styles.driverSelect}>
                           <Text style={styles.driverLabel}>{selectedOrder.driver_id ? 'Reassign Driver:' : 'Assign Driver:'}</Text>
                           {drivers.map(driver => (
@@ -965,7 +965,7 @@ export default function OrdersScreen() {
                             </TouchableOpacity>
                           ))}
                           <Button
-                            title={selectedOrder.driver_id ? 'Confirm Reassignment' : 'Confirm Driver'}
+                            title="Confirm Driver"
                             onPress={() => chosenDriverId && handleAssignDriver(selectedOrder.id, chosenDriverId)}
                             disabled={!chosenDriverId}
                             style={styles.actionButton}

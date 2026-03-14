@@ -1273,24 +1273,17 @@ async def update_order(order_id: str, order_data: OrderUpdate, current_user: dic
         
         # If assigning driver, get driver name
         if "driver_id" in update_data and update_data["driver_id"]:
+            if order.get("driver_id") and order.get("driver_id") != update_data["driver_id"]:
+                raise HTTPException(status_code=400, detail="Driver is already assigned to this order")
+
             driver = await db.users.find_one({"_id": ObjectId(update_data["driver_id"])})
             if not driver or driver.get("role") != UserRole.DRIVER.value or not driver.get("is_active", True):
                 raise HTTPException(status_code=400, detail="Selected user is not an active driver")
 
             update_data["driver_name"] = driver["name"]
-            # Create or update delivery record
+            # Create delivery record
             existing_delivery = await db.deliveries.find_one({"order_id": order_id})
-            if existing_delivery:
-                await db.deliveries.update_one(
-                    {"_id": existing_delivery["_id"]},
-                    {
-                        "$set": {
-                            "driver_id": update_data["driver_id"],
-                            "updated_at": datetime.utcnow()
-                        }
-                    }
-                )
-            else:
+            if not existing_delivery:
                 delivery = {
                     "_id": ObjectId(),
                     "order_id": order_id,
