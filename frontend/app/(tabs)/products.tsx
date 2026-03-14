@@ -629,7 +629,10 @@ const styles = StyleSheet.create({
     borderRadius: borderRadius.md,
     marginBottom: spacing.md,
   },
-  picker: { height: 50 },
+  picker: {
+    height: Platform.OS === 'ios' ? 180 : 50,
+    color: colors.text,
+  },
   loadingFooter: {
     flexDirection: 'row',
     justifyContent: 'center',
