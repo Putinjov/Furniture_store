@@ -13,6 +13,7 @@ import {
   Platform,
   TextInput,
   ActivityIndicator,
+  Share,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
@@ -66,6 +67,7 @@ interface Order {
   payments: PaymentRecord[];
   seller_name: string;
   seller_comments?: string;
+  driver_id?: string;
   driver_name?: string;
   created_at: string;
 }
@@ -116,6 +118,7 @@ export default function OrdersScreen() {
   const [showDetailModal, setShowDetailModal] = useState(false);
   const [showPaymentModal, setShowPaymentModal] = useState(false);
   const [selectedOrder, setSelectedOrder] = useState<Order | null>(null);
+  const [chosenDriverId, setChosenDriverId] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   
   // Pagination state
@@ -266,26 +269,9 @@ export default function OrdersScreen() {
     try {
       const totalItems = selectedProducts.reduce((sum, sp) => sum + sp.quantity, 0);
       
-      // Calculate total for payment status
-      const productsTotal = selectedProducts.reduce((sum, sp) => sum + sp.product.price * sp.quantity, 0);
-      const servicesTotal = selectedServices.reduce((sum, ss) => {
-        return sum + calculateServicePrice(ss.service, totalItems, ss.quantity);
-      }, 0);
-      const subtotal = productsTotal + servicesTotal;
-      const discountAmount = subtotal * (parseFloat(discount) || 0) / 100;
-      const orderTotal = subtotal - discountAmount;
-      
-      // Determine initial payment status
-      let paymentStatus = 'unpaid';
       let amountPaid = 0;
-      
       if (initialPaymentAmount && !isNaN(paymentAmt) && paymentAmt > 0 && initialPaymentType) {
         amountPaid = paymentAmt;
-        if (paymentAmt >= orderTotal) {
-          paymentStatus = 'paid';
-        } else {
-          paymentStatus = 'partially_paid';
-        }
       }
       
       const orderData = {
@@ -311,8 +297,8 @@ export default function OrdersScreen() {
         })),
         discount_percent: parseFloat(discount) || 0,
         seller_comments: comments,
-        payment_status: paymentStatus,
-        amount_paid: amountPaid,
+        payment_status: "unpaid",
+        amount_paid: 0,
       };
 
       const response = await api.post('/orders', orderData);
@@ -385,7 +371,9 @@ export default function OrdersScreen() {
 
   const handleAssignDriver = async (orderId: string, driverId: string) => {
     try {
-      await api.put(`/orders/${orderId}`, { driver_id: driverId, status: 'in_delivery' });
+      const response = await api.put(`/orders/${orderId}`, { driver_id: driverId, status: 'in_delivery' });
+      setSelectedOrder(response.data);
+      setChosenDriverId(driverId);
       Alert.alert('Success', 'Driver assigned successfully');
       onRefresh();
     } catch (error: any) {
@@ -396,9 +384,22 @@ export default function OrdersScreen() {
   const handlePrintReceipt = async (orderId: string) => {
     try {
       const response = await api.get(`/orders/${orderId}/receipt`);
-      Alert.alert('Receipt', response.data.receipt);
-    } catch (error) {
-      Alert.alert('Error', 'Failed to generate receipt');
+      const receipt = response.data.receipt as string;
+
+      if (Platform.OS === 'web' && typeof window !== 'undefined') {
+        const printWindow = window.open('', '_blank', 'width=600,height=800');
+        if (printWindow) {
+          printWindow.document.write(`<pre style="font-family: monospace; white-space: pre-wrap;">${receipt}</pre>`);
+          printWindow.document.close();
+          printWindow.focus();
+          printWindow.print();
+          return;
+        }
+      }
+
+      await Share.share({ message: receipt });
+    } catch (error: any) {
+      Alert.alert('Error', error.response?.data?.detail || 'Failed to generate receipt');
     }
   };
 
@@ -499,6 +500,7 @@ export default function OrdersScreen() {
     <Card
       onPress={() => {
         setSelectedOrder(item);
+        setChosenDriverId(item.driver_id || null);
         setShowDetailModal(true);
       }}
     >
@@ -731,8 +733,32 @@ export default function OrdersScreen() {
               />
 
               <View style={styles.totalSection}>
-                <Text style={styles.totalLabel}>Total:</Text>
-                <Text style={styles.totalValue}>€{calculateTotal().toFixed(2)}</Text>
+                <View style={styles.totalRow}>
+                  <Text style={styles.paymentSummaryLabel}>Subtotal:</Text>
+                  <Text style={styles.paymentSummaryValue}>
+                    €{(selectedProducts.reduce((sum, sp) => sum + sp.product.price * sp.quantity, 0) +
+                      selectedServices.reduce((sum, ss) => {
+                        const totalItems = selectedProducts.reduce((itemsSum, sp) => itemsSum + sp.quantity, 0);
+                        return sum + calculateServicePrice(ss.service, totalItems, ss.quantity);
+                      }, 0)).toFixed(2)}
+                  </Text>
+                </View>
+                {(parseFloat(discount) || 0) > 0 && (
+                  <View style={styles.totalRow}>
+                    <Text style={styles.paymentSummaryLabel}>Discount ({parseFloat(discount) || 0}%):</Text>
+                    <Text style={[styles.paymentSummaryValue, { color: colors.success }]}>
+                      -€{(((selectedProducts.reduce((sum, sp) => sum + sp.product.price * sp.quantity, 0) +
+                        selectedServices.reduce((sum, ss) => {
+                          const totalItems = selectedProducts.reduce((itemsSum, sp) => itemsSum + sp.quantity, 0);
+                          return sum + calculateServicePrice(ss.service, totalItems, ss.quantity);
+                        }, 0)) * (parseFloat(discount) || 0)) / 100).toFixed(2)}
+                    </Text>
+                  </View>
+                )}
+                <View style={styles.totalRow}>
+                  <Text style={styles.totalLabel}>Total:</Text>
+                  <Text style={styles.totalValue}>€{calculateTotal().toFixed(2)}</Text>
+                </View>
               </View>
 
               {/* Payment Section for Order Creation */}
@@ -828,6 +854,18 @@ export default function OrdersScreen() {
                     </View>
                   ))}
                   <View style={styles.totalRow}>
+                    <Text style={styles.paymentSummaryLabel}>Subtotal</Text>
+                    <Text style={styles.paymentSummaryValue}>€{selectedOrder.subtotal.toFixed(2)}</Text>
+                  </View>
+                  {selectedOrder.discount_percent > 0 && (
+                    <View style={styles.totalRow}>
+                      <Text style={styles.paymentSummaryLabel}>Discount ({selectedOrder.discount_percent}%):</Text>
+                      <Text style={[styles.paymentSummaryValue, { color: colors.success }]}>
+                        -€{selectedOrder.discount_amount.toFixed(2)}
+                      </Text>
+                    </View>
+                  )}
+                  <View style={styles.totalRow}>
                     <Text style={styles.totalLabel}>Total</Text>
                     <Text style={styles.totalValue}>€{selectedOrder.total.toFixed(2)}</Text>
                   </View>
@@ -913,20 +951,29 @@ export default function OrdersScreen() {
                           style={styles.actionButton}
                         />
                       )}
-                      {selectedOrder.status === 'ready' && drivers.length > 0 && (
+                      {selectedOrder.status !== 'cancelled' && selectedOrder.status !== 'completed' && drivers.length > 0 && (
                         <View style={styles.driverSelect}>
-                          <Text style={styles.driverLabel}>Assign Driver:</Text>
+                          <Text style={styles.driverLabel}>{selectedOrder.driver_id ? 'Reassign Driver:' : 'Assign Driver:'}</Text>
                           {drivers.map(driver => (
                             <TouchableOpacity
                               key={driver.id}
-                              style={styles.driverOption}
-                              onPress={() => handleAssignDriver(selectedOrder.id, driver.id)}
+                              style={[styles.driverOption, chosenDriverId === driver.id && styles.driverOptionSelected]}
+                              onPress={() => setChosenDriverId(driver.id)}
                             >
                               <Ionicons name="person" size={16} color={colors.primary} />
                               <Text style={styles.driverName}>{driver.name}</Text>
                             </TouchableOpacity>
                           ))}
+                          <Button
+                            title={selectedOrder.driver_id ? 'Confirm Reassignment' : 'Confirm Driver'}
+                            onPress={() => chosenDriverId && handleAssignDriver(selectedOrder.id, chosenDriverId)}
+                            disabled={!chosenDriverId}
+                            style={styles.actionButton}
+                          />
                         </View>
+                      )}
+                      {selectedOrder.driver_name && (
+                        <Text style={styles.detailText}>Assigned Driver: {selectedOrder.driver_name}</Text>
                       )}
                       {selectedOrder.status !== 'cancelled' && selectedOrder.status !== 'completed' && (
                         <Button
@@ -1169,9 +1216,7 @@ const styles = StyleSheet.create({
     textAlign: 'center',
   },
   totalSection: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
+    gap: spacing.xs,
     padding: spacing.md,
     backgroundColor: colors.surface,
     borderRadius: borderRadius.md,
@@ -1208,6 +1253,12 @@ const styles = StyleSheet.create({
     backgroundColor: colors.divider,
     borderRadius: borderRadius.sm,
     marginBottom: spacing.xs,
+    borderWidth: 1,
+    borderColor: colors.border,
+  },
+  driverOptionSelected: {
+    borderColor: colors.primary,
+    backgroundColor: colors.primary + '10',
   },
   driverName: { marginLeft: spacing.sm, fontSize: fontSize.md, color: colors.text },
   // Payment styles
