@@ -312,7 +312,17 @@ export default function ProductsScreen() {
     <Card onPress={canEdit ? () => openModal('product', item) : undefined}>
       <View style={styles.productHeader}>
         <Text style={styles.productName}>{item.name}</Text>
-        <StatusBadge status={item.status} type="product" />
+        <View style={styles.productHeaderActions}>
+          <StatusBadge status={item.status} type="product" />
+          {canEdit && (
+            <TouchableOpacity
+              style={styles.inlineDeleteButton}
+              onPress={() => handleDelete('product', item.id)}
+            >
+              <Ionicons name="trash-outline" size={18} color={colors.danger} />
+            </TouchableOpacity>
+          )}
+        </View>
       </View>
       <Text style={styles.categoryText}>{item.category_name}</Text>
       <View style={styles.productMeta}>
@@ -324,14 +334,6 @@ export default function ProductsScreen() {
           Stock: {item.stock_quantity}
         </Text>
       </View>
-      {canEdit && (
-        <TouchableOpacity
-          style={styles.deleteButton}
-          onPress={() => handleDelete('product', item.id)}
-        >
-          <Ionicons name="trash-outline" size={18} color={colors.danger} />
-        </TouchableOpacity>
-      )}
     </Card>
   );
 
@@ -585,6 +587,11 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     marginBottom: spacing.xs,
   },
+  productHeaderActions: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.xs,
+  },
   productName: { fontSize: fontSize.lg, fontWeight: '600', color: colors.text },
   categoryText: { fontSize: fontSize.sm, color: colors.textSecondary, marginBottom: spacing.xs },
   serviceType: { fontSize: fontSize.sm, color: colors.success, marginBottom: spacing.xs, fontWeight: '500' },
@@ -593,6 +600,7 @@ const styles = StyleSheet.create({
   productPrice: { fontSize: fontSize.lg, fontWeight: '700', color: colors.primary },
   stockText: { fontSize: fontSize.sm, color: colors.textSecondary },
   lowStock: { color: colors.danger, fontWeight: '600' },
+  inlineDeleteButton: { padding: spacing.xs },
   deleteButton: { position: 'absolute', top: spacing.md, right: spacing.md },
   emptyState: { alignItems: 'center', paddingVertical: spacing.xl * 2 },
   emptyText: { fontSize: fontSize.md, color: colors.textSecondary, marginTop: spacing.md },
@@ -621,7 +629,10 @@ const styles = StyleSheet.create({
     borderRadius: borderRadius.md,
     marginBottom: spacing.md,
   },
-  picker: { height: 50 },
+  picker: {
+    height: Platform.OS === 'ios' ? 180 : 50,
+    color: colors.text,
+  },
   loadingFooter: {
     flexDirection: 'row',
     justifyContent: 'center',

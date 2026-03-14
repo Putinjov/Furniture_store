@@ -1,4 +1,4 @@
-from fastapi import FastAPI, APIRouter, HTTPException, Depends, status
+from fastapi import FastAPI, APIRouter, HTTPException, Depends, status, UploadFile, File
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from starlette.middleware.cors import CORSMiddleware
 from config import settings
@@ -12,6 +12,9 @@ import jwt
 from passlib.context import CryptContext
 from bson import ObjectId
 from enum import Enum
+import csv
+import io
+import pandas as pd
 
 # Create the main app
 app = FastAPI(title="Furniture Store Management API")
@@ -155,6 +158,12 @@ class ProductResponse(ProductBase):
     category_name: Optional[str] = None
     created_at: datetime
     updated_at: datetime
+
+
+class ProductImportResponse(BaseModel):
+    imported_count: int
+    skipped_count: int
+    errors: List[str]
 
 # Service Types Enum
 class ServiceType(str, Enum):
@@ -789,6 +798,147 @@ async def delete_product(product_id: str, current_user: dict = Depends(require_r
     await log_action(str(current_user["_id"]), current_user["name"], "delete_product", "product", product_id)
     
     return {"message": "Product deleted successfully"}
+
+
+def _normalize_header(value: str) -> str:
+    return value.strip().lower().replace(" ", "_")
+
+
+def _parse_status(value: Optional[str]) -> str:
+    if not value:
+        return ProductStatus.IN_STOCK.value
+
+    normalized = str(value).strip().lower().replace("-", "_").replace(" ", "_")
+    valid_statuses = {status.value for status in ProductStatus}
+    return normalized if normalized in valid_statuses else ProductStatus.IN_STOCK.value
+
+
+@api_router.post("/products/import", response_model=ProductImportResponse)
+async def import_products(
+    file: UploadFile = File(...),
+    current_user: dict = Depends(require_roles([UserRole.OWNER, UserRole.MANAGER]))
+):
+    filename = (file.filename or "").lower()
+    if not filename.endswith((".csv", ".xlsx", ".xls")):
+        raise HTTPException(status_code=400, detail="Only CSV, XLS, and XLSX files are supported")
+
+    file_bytes = await file.read()
+    if not file_bytes:
+        raise HTTPException(status_code=400, detail="Uploaded file is empty")
+
+    try:
+        if filename.endswith(".csv"):
+            decoded_content = None
+            for encoding in ("utf-8-sig", "cp1251", "latin-1"):
+                try:
+                    decoded_content = file_bytes.decode(encoding)
+                    break
+                except UnicodeDecodeError:
+                    continue
+
+            if decoded_content is None:
+                raise HTTPException(status_code=400, detail="Could not decode CSV file")
+
+            reader = csv.DictReader(io.StringIO(decoded_content))
+            rows = [dict(row) for row in reader]
+        else:
+            try:
+                dataframe = pd.read_excel(io.BytesIO(file_bytes), dtype=str)
+            except ImportError:
+                raise HTTPException(status_code=500, detail="Excel support requires openpyxl dependency")
+            rows = dataframe.fillna("").to_dict(orient="records")
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception("Product import parsing failed")
+        raise HTTPException(status_code=400, detail=f"Could not parse file: {str(exc)}")
+
+    if not rows:
+        raise HTTPException(status_code=400, detail="No rows found in file")
+
+    categories = await db.categories.find().to_list(1000)
+    categories_by_id = {str(category["_id"]): category for category in categories}
+    categories_by_name = {category["name"].strip().lower(): category for category in categories}
+
+    imported_products = []
+    errors = []
+
+    for index, raw_row in enumerate(rows, start=2):
+        row = {_normalize_header(str(key)): value for key, value in raw_row.items()}
+
+        name = str(row.get("name", "")).strip()
+        category_id = str(row.get("category_id", "")).strip()
+        category_name = str(row.get("category_name", row.get("category", ""))).strip()
+
+        if not name:
+            errors.append(f"Row {index}: product name is required")
+            continue
+
+        if not category_id and not category_name:
+            errors.append(f"Row {index}: category_id or category_name is required")
+            continue
+
+        category = None
+        if category_id:
+            category = categories_by_id.get(category_id)
+            if not category:
+                errors.append(f"Row {index}: category_id '{category_id}' not found")
+                continue
+        elif category_name:
+            category = categories_by_name.get(category_name.lower())
+            if not category:
+                now = datetime.utcnow()
+                category = {
+                    "_id": ObjectId(),
+                    "name": category_name,
+                    "description": None,
+                    "created_at": now,
+                }
+                await db.categories.insert_one(category)
+                categories_by_id[str(category["_id"])] = category
+                categories_by_name[category_name.lower()] = category
+
+        try:
+            price = float(row.get("price", 0) or 0)
+            cost = float(row.get("cost", 0) or 0)
+            stock_quantity = int(float(row.get("stock_quantity", 0) or 0))
+            low_stock_threshold = int(float(row.get("low_stock_threshold", 5) or 5))
+        except ValueError:
+            errors.append(f"Row {index}: invalid numeric values")
+            continue
+
+        now = datetime.utcnow()
+        imported_products.append({
+            "_id": ObjectId(),
+            "name": name,
+            "description": str(row.get("description", "")).strip() or None,
+            "category_id": str(category["_id"]),
+            "price": price,
+            "cost": cost,
+            "stock_quantity": stock_quantity,
+            "status": _parse_status(str(row.get("status", "")).strip()),
+            "expected_restock_date": None,
+            "low_stock_threshold": low_stock_threshold,
+            "created_at": now,
+            "updated_at": now,
+        })
+
+    if imported_products:
+        await db.products.insert_many(imported_products)
+        await log_action(
+            str(current_user["_id"]),
+            current_user["name"],
+            "import_products",
+            "product",
+            None,
+            {"imported_count": len(imported_products), "skipped_count": len(errors)}
+        )
+
+    return ProductImportResponse(
+        imported_count=len(imported_products),
+        skipped_count=len(errors),
+        errors=errors
+    )
 
 # ================== SERVICE ROUTES ==================
 
