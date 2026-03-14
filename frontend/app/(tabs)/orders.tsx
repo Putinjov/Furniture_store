@@ -953,7 +953,7 @@ export default function OrdersScreen() {
                       )}
                       {selectedOrder.status === 'ready' && drivers.length > 0 && !selectedOrder.driver_id && (
                         <View style={styles.driverSelect}>
-                          <Text style={styles.driverLabel}>Assign Driver:</Text>
+                          <Text style={styles.driverLabel}>{selectedOrder.driver_id ? 'Reassign Driver:' : 'Assign Driver:'}</Text>
                           {drivers.map(driver => (
                             <TouchableOpacity
                               key={driver.id}
