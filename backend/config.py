@@ -10,7 +10,7 @@ class Settings:
     def __init__(self) -> None:
         self.mongodb_uri = os.getenv("MONGODB_URI")
         self.db_name = os.getenv("DB_NAME", "furniture_store_db")
-        self.jwt_secret = os.getenv("JWT_SECRET", "18004qwerty")
+        self.jwt_secret = os.getenv("JWT_SECRET")
         self.environment = os.getenv("ENVIRONMENT", "development")
         self.port = int(os.getenv("PORT", "8000"))
         cors_origins = os.getenv("CORS_ORIGINS", "http://localhost:3000,http://localhost:8081")
@@ -19,6 +19,11 @@ class Settings:
         if not self.mongodb_uri:
             raise RuntimeError(
                 "MONGODB_URI is not set. Configure backend/.env (see backend/.env.example)."
+            )
+
+        if not self.jwt_secret:
+            raise RuntimeError(
+                "JWT_SECRET is not set. Configure backend/.env (see backend/.env.example)."
             )
 
 

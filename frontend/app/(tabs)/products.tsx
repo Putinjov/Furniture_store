@@ -88,6 +88,7 @@ export default function ProductsScreen() {
   const [formCategory, setFormCategory] = useState('');
   const [formStatus, setFormStatus] = useState('in_stock');
   const [formThreshold, setFormThreshold] = useState('5');
+  const [formServiceType, setFormServiceType] = useState('assembly');
 
   const canEdit = user?.role === 'owner' || user?.role === 'manager';
 
@@ -202,6 +203,7 @@ export default function ProductsScreen() {
     setFormCategory('');
     setFormStatus('in_stock');
     setFormThreshold('5');
+    setFormServiceType('assembly');
     setEditingItem(null);
   };
 
@@ -219,7 +221,8 @@ export default function ProductsScreen() {
         setFormStatus(item.status);
         setFormThreshold(item.low_stock_threshold.toString());
       } else if (type === 'service') {
-        setFormPrice(item.price.toString());
+        setFormPrice(item.base_price.toString());
+        setFormServiceType(item.service_type || 'assembly');
       }
     } else {
       resetForm();
@@ -260,7 +263,8 @@ export default function ProductsScreen() {
         const data = {
           name: formName,
           description: formDescription,
-          price: parseFloat(formPrice) || 0,
+          service_type: formServiceType,
+          base_price: parseFloat(formPrice) || 0,
         };
         if (editingItem) {
           await api.put(`/services/${editingItem.id}`, data);
@@ -298,7 +302,13 @@ export default function ProductsScreen() {
           style: 'destructive',
           onPress: async () => {
             try {
-              await api.delete(`/${type}s/${id}`);
+              const endpointByType: Record<string, string> = {
+                product: 'products',
+                service: 'services',
+                category: 'categories',
+              };
+              const endpoint = endpointByType[type] || `${type}s`;
+              await api.delete(`/${endpoint}/${id}`);
               onRefresh();
             } catch (error: any) {
               Alert.alert('Error', error.response?.data?.detail || 'Failed to delete');
@@ -533,12 +543,33 @@ export default function ProductsScreen() {
 
               {(modalType === 'product' || modalType === 'service') && (
                 <Input
-                  label="Price (€)"
+                  label={modalType === 'service' ? 'Base Price (€)' : 'Price (€)'}
                   value={formPrice}
                   onChangeText={setFormPrice}
                   placeholder="0.00"
                   keyboardType="decimal-pad"
                 />
+              )}
+
+
+
+              {modalType === 'service' && (
+                <>
+                  <Text style={styles.label}>Service Type</Text>
+                  <View style={styles.pickerContainer}>
+                    <Picker
+                      selectedValue={formServiceType}
+                      onValueChange={setFormServiceType}
+                      style={styles.picker}
+                    >
+                      <Picker.Item label="Assembly" value="assembly" />
+                      <Picker.Item label="Delivery" value="delivery" />
+                      <Picker.Item label="Takeaway Mattress (Small)" value="takeaway_mattress_small" />
+                      <Picker.Item label="Takeaway Mattress (Big)" value="takeaway_mattress_big" />
+                      <Picker.Item label="Takeaway Sofa" value="takeaway_sofa" />
+                    </Picker>
+                  </View>
+                </>
               )}
 
               {modalType === 'product' && (

@@ -88,11 +88,6 @@ export default function LoginScreen() {
               style={styles.loginButton}
             />
 
-            <View style={styles.demoInfo}>
-              <Text style={styles.demoTitle}>Demo Credentials:</Text>
-              <Text style={styles.demoText}>Email: admin@store.com</Text>
-              <Text style={styles.demoText}>Password: admin123</Text>
-            </View>
           </View>
         </ScrollView>
       </KeyboardAvoidingView>
@@ -147,21 +142,5 @@ const styles = StyleSheet.create({
   },
   loginButton: {
     marginTop: spacing.md,
-  },
-  demoInfo: {
-    marginTop: spacing.lg,
-    padding: spacing.md,
-    backgroundColor: colors.divider,
-    borderRadius: 8,
-  },
-  demoTitle: {
-    fontSize: fontSize.sm,
-    fontWeight: '600',
-    color: colors.text,
-    marginBottom: spacing.xs,
-  },
-  demoText: {
-    fontSize: fontSize.sm,
-    color: colors.textSecondary,
   },
 });
