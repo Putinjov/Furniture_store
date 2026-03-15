@@ -385,14 +385,15 @@ export default function OrdersScreen() {
     try {
       const response = await api.get(`/orders/${orderId}/receipt`);
       const receipt = response.data.receipt as string;
+      const invoiceHtml = response.data.html as string | undefined;
 
       if (Platform.OS === 'web' && typeof window !== 'undefined') {
-        const printWindow = window.open('', '_blank', 'width=600,height=800');
+        const printWindow = window.open('', '_blank', 'width=900,height=1000');
         if (printWindow) {
-          printWindow.document.write(`<pre style="font-family: monospace; white-space: pre-wrap;">${receipt}</pre>`);
+          printWindow.document.write(invoiceHtml || `<pre style="font-family: monospace; white-space: pre-wrap;">${receipt}</pre>`);
           printWindow.document.close();
           printWindow.focus();
-          printWindow.print();
+          setTimeout(() => printWindow.print(), 250);
           return;
         }
       }
@@ -923,12 +924,19 @@ export default function OrdersScreen() {
                   )}
 
                   {/* Add Payment Button */}
-                  {selectedOrder.status !== 'cancelled' && selectedOrder.status !== 'completed' && (
+                  {((selectedOrder.status !== 'cancelled' && selectedOrder.status !== 'completed') ||
+                    (selectedOrder.status === 'cancelled' && selectedOrder.amount_paid > 0)) && (
                     <Button
-                      title="Record Payment"
-                      onPress={() => setShowPaymentModal(true)}
-                      variant="success"
-                      icon={<Ionicons name="card" size={20} color="#fff" />}
+                      title={selectedOrder.status === 'cancelled' ? 'Process Refund' : 'Record Payment'}
+                      onPress={() => {
+                        if (selectedOrder.status === 'cancelled') {
+                          setPaymentType('refund');
+                          setPaymentAmount(selectedOrder.amount_paid.toFixed(2));
+                        }
+                        setShowPaymentModal(true);
+                      }}
+                      variant={selectedOrder.status === 'cancelled' ? 'danger' : 'success'}
+                      icon={<Ionicons name={selectedOrder.status === 'cancelled' ? 'arrow-undo' : 'card'} size={20} color="#fff" />}
                       style={{ marginTop: spacing.md }}
                     />
                   )}
@@ -1004,7 +1012,7 @@ export default function OrdersScreen() {
         <View style={styles.paymentModalOverlay}>
           <View style={styles.paymentModalContent}>
             <View style={styles.paymentModalHeader}>
-              <Text style={styles.paymentModalTitle}>Record Payment</Text>
+              <Text style={styles.paymentModalTitle}>{selectedOrder?.status === 'cancelled' ? 'Process Refund' : 'Record Payment'}</Text>
               <TouchableOpacity onPress={() => { setShowPaymentModal(false); resetPaymentForm(); }}>
                 <Ionicons name="close" size={24} color={colors.text} />
               </TouchableOpacity>
@@ -1020,7 +1028,7 @@ export default function OrdersScreen() {
                 </View>
               )}
 
-              <Text style={styles.paymentInputLabel}>Amount (€)</Text>
+              <Text style={styles.paymentInputLabel}>{selectedOrder?.status === 'cancelled' ? 'Refund Amount (€)' : 'Amount (€)'}</Text>
               <TextInput
                 style={styles.paymentInput}
                 value={paymentAmount}
@@ -1032,7 +1040,9 @@ export default function OrdersScreen() {
 
               <Text style={styles.paymentInputLabel}>Payment Type (tap to select/unselect)</Text>
               <View style={styles.paymentTypesGrid}>
-                {paymentTypes.map(type => (
+                {paymentTypes
+                  .filter(type => selectedOrder?.status !== 'cancelled' || type.value === 'refund')
+                  .map(type => (
                   <TouchableOpacity
                     key={type.value}
                     style={[
@@ -1041,7 +1051,13 @@ export default function OrdersScreen() {
                       type.value === 'refund' && styles.paymentTypeRefund,
                       type.value === 'refund' && paymentType === type.value && styles.paymentTypeRefundSelected,
                     ]}
-                    onPress={() => togglePaymentType(type.value, false)}
+                    onPress={() => {
+                      if (selectedOrder?.status === 'cancelled') {
+                        setPaymentType('refund');
+                        return;
+                      }
+                      togglePaymentType(type.value, false);
+                    }}
                   >
                     <Ionicons 
                       name={type.icon as any} 

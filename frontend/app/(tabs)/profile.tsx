@@ -4,8 +4,8 @@ import {
   Text,
   StyleSheet,
   ScrollView,
-  TouchableOpacity,
   Alert,
+  Platform,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { router } from 'expo-router';
@@ -18,7 +18,21 @@ import { colors, spacing, fontSize } from '../../src/constants/theme';
 export default function ProfileScreen() {
   const { user, logout } = useAuthStore();
 
+  const performLogout = async () => {
+    await logout();
+    router.replace('/');
+  };
+
   const handleLogout = () => {
+    if (Platform.OS === 'web' && typeof window !== 'undefined') {
+      const confirmed = window.confirm('Are you sure you want to logout?');
+      if (!confirmed) {
+        return;
+      }
+      performLogout();
+      return;
+    }
+
     Alert.alert(
       'Logout',
       'Are you sure you want to logout?',
@@ -27,10 +41,7 @@ export default function ProfileScreen() {
         {
           text: 'Logout',
           style: 'destructive',
-          onPress: async () => {
-            await logout();
-            router.replace('/(auth)/login');
-          },
+          onPress: performLogout,
         },
       ]
     );

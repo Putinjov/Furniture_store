@@ -64,6 +64,7 @@ export default function ProductsScreen() {
   const [showModal, setShowModal] = useState(false);
   const [modalType, setModalType] = useState<'product' | 'service' | 'category'>('product');
   const [loading, setLoading] = useState(false);
+  const [importLoading, setImportLoading] = useState(false);
   const [editingItem, setEditingItem] = useState<any>(null);
 
   // Pagination state for products
@@ -308,6 +309,51 @@ export default function ProductsScreen() {
     );
   };
 
+  const handleImportProducts = async () => {
+    if (Platform.OS !== 'web' || typeof document === 'undefined') {
+      Alert.alert('Import is available on web', 'Please use web app to import products from file.');
+      return;
+    }
+
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.accept = '.csv,.xls,.xlsx';
+
+    input.onchange = async () => {
+      const file = input.files?.[0];
+      if (!file) return;
+
+      const formData = new FormData();
+      formData.append('file', file);
+
+      setImportLoading(true);
+      try {
+        const response = await api.post('/products/import', formData, {
+          headers: {
+            'Content-Type': 'multipart/form-data',
+          },
+        });
+
+        const { imported_count, skipped_count, errors } = response.data;
+        const issues = Array.isArray(errors) && errors.length > 0
+          ? `\n\nIssues:\n${errors.slice(0, 5).join('\n')}`
+          : '';
+
+        Alert.alert(
+          'Import completed',
+          `Imported: ${imported_count}\nSkipped: ${skipped_count}${issues}`
+        );
+        onRefresh();
+      } catch (error: any) {
+        Alert.alert('Error', error.response?.data?.detail || 'Failed to import products');
+      } finally {
+        setImportLoading(false);
+      }
+    };
+
+    input.click();
+  };
+
   const renderProduct = ({ item }: { item: Product }) => (
     <Card onPress={canEdit ? () => openModal('product', item) : undefined}>
       <View style={styles.productHeader}>
@@ -413,12 +459,24 @@ export default function ProductsScreen() {
       <View style={styles.header}>
         <Text style={styles.title}>Inventory</Text>
         {canEdit && (
-          <TouchableOpacity
-            style={styles.addButton}
-            onPress={() => openModal(activeTab === 'categories' ? 'category' : activeTab === 'services' ? 'service' : 'product')}
-          >
-            <Ionicons name="add" size={24} color="#fff" />
-          </TouchableOpacity>
+          <View style={styles.headerActions}>
+            {activeTab === 'products' && (
+              <Button
+                title={importLoading ? 'Importing...' : 'Import file'}
+                onPress={handleImportProducts}
+                loading={importLoading}
+                variant="secondary"
+                icon={<Ionicons name="cloud-upload-outline" size={18} color="#fff" />}
+                style={styles.importButton}
+              />
+            )}
+            <TouchableOpacity
+              style={styles.addButton}
+              onPress={() => openModal(activeTab === 'categories' ? 'category' : activeTab === 'services' ? 'service' : 'product')}
+            >
+              <Ionicons name="add" size={24} color="#fff" />
+            </TouchableOpacity>
+          </View>
         )}
       </View>
 
@@ -557,6 +615,15 @@ const styles = StyleSheet.create({
     paddingVertical: spacing.sm,
   },
   title: { fontSize: fontSize.xxl, fontWeight: '700', color: colors.text },
+  headerActions: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.sm,
+  },
+  importButton: {
+    minHeight: 44,
+    paddingVertical: spacing.sm,
+  },
   addButton: {
     backgroundColor: colors.primary,
     width: 44,
