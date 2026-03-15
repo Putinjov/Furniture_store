@@ -1329,8 +1329,19 @@ async def add_payment(order_id: str, payment_data: PaymentCreate, current_user: 
     if not order:
         raise HTTPException(status_code=404, detail="Order not found")
 
-    if order.get("status") in [OrderStatus.CANCELLED.value, OrderStatus.COMPLETED.value]:
-        raise HTTPException(status_code=400, detail="Cannot record payment for cancelled or completed orders")
+    is_refund = payment_data.payment_type == PaymentType.REFUND
+
+    if order.get("status") == OrderStatus.COMPLETED.value:
+        raise HTTPException(status_code=400, detail="Cannot record payment for completed orders")
+
+    if order.get("status") == OrderStatus.CANCELLED.value and not is_refund:
+        raise HTTPException(status_code=400, detail="Only refunds are allowed for cancelled orders")
+
+    if is_refund:
+        if order.get("status") != OrderStatus.CANCELLED.value:
+            raise HTTPException(status_code=400, detail="Refunds are allowed only for cancelled orders")
+        if order.get("amount_paid", 0) <= 0:
+            raise HTTPException(status_code=400, detail="Cannot refund an order without paid balance")
     
     role = current_user["role"]
     
@@ -1370,8 +1381,10 @@ async def add_payment(order_id: str, payment_data: PaymentCreate, current_user: 
     current_payments.append(payment_record)
     
     # For refunds, subtract from total paid
-    if payment_data.payment_type == PaymentType.REFUND:
-        new_amount_paid = order["amount_paid"] - abs(payment_data.amount)
+    if is_refund:
+        refund_amount = min(abs(payment_data.amount), order["amount_paid"])
+        payment_record["amount"] = refund_amount
+        new_amount_paid = order["amount_paid"] - refund_amount
     else:
         new_amount_paid = order["amount_paid"] + payment_data.amount
     
@@ -1468,7 +1481,24 @@ async def get_deliveries(
     if current_user["role"] == UserRole.DRIVER.value:
         query["driver_id"] = str(current_user["_id"])
     
-    deliveries = await db.deliveries.find(query).sort("assigned_at", -1).skip(skip).limit(limit).to_list(limit)
+    raw_deliveries = await db.deliveries.find(query).sort("assigned_at", -1).skip(skip).limit(limit).to_list(limit)
+
+    order_ids = []
+    for d in raw_deliveries:
+        try:
+            order_ids.append(ObjectId(d["order_id"]))
+        except Exception:
+            continue
+
+    cancelled_orders = set()
+    if order_ids:
+        cancelled = await db.orders.find(
+            {"_id": {"$in": order_ids}, "status": OrderStatus.CANCELLED.value},
+            {"_id": 1}
+        ).to_list(len(order_ids))
+        cancelled_orders = {str(o["_id"]) for o in cancelled}
+
+    deliveries = [d for d in raw_deliveries if d.get("order_id") not in cancelled_orders]
     
     return [
         DeliveryResponse(
@@ -1628,6 +1658,8 @@ async def get_order_receipt(order_id: str, current_user: dict = Depends(get_curr
     if not order:
         raise HTTPException(status_code=404, detail="Order not found")
     
+    created_date = order["created_at"].strftime('%d/%m/%Y')
+
     # Generate simple text receipt
     receipt_lines = [
         "=" * 40,
@@ -1681,7 +1713,88 @@ async def get_order_receipt(order_id: str, current_user: dict = Depends(get_curr
         "=" * 40,
     ])
     
-    return {"receipt": "\n".join(receipt_lines)}
+    total_vat = order['total'] * 0.23
+
+    rows_html = ""
+    for item in order["items"]:
+        rows_html += f"""
+          <tr>
+            <td>{item['quantity']}</td>
+            <td>{item['product_name']}</td>
+            <td>€{item['total_price']:.2f}</td>
+          </tr>
+        """
+
+    for service in order.get("services", []):
+        qty = service.get("quantity", 1)
+        name = service.get("service_name", "Service")
+        price = service.get("calculated_price", service.get("price", 0))
+        rows_html += f"""
+          <tr>
+            <td>{qty}</td>
+            <td>{name}</td>
+            <td>€{price:.2f}</td>
+          </tr>
+        """
+
+    invoice_html = f"""
+    <html>
+      <head>
+        <title>Invoice {order['order_number']}</title>
+        <style>
+          @media print {{ body {{ margin: 0; }} }}
+          body {{ font-family: 'Times New Roman', serif; padding: 18px; color: #222; }}
+          .header {{ text-align: center; border-bottom: 2px solid #222; padding-bottom: 8px; }}
+          .brand {{ font-size: 44px; font-weight: 700; letter-spacing: 0.5px; margin: 0; }}
+          .meta {{ display: flex; justify-content: space-between; margin-top: 10px; }}
+          .box {{ border: 1px solid #777; border-radius: 8px; padding: 10px; width: 58%; }}
+          .right {{ width: 36%; text-align: center; }}
+          table {{ width: 100%; border-collapse: collapse; margin-top: 14px; }}
+          th, td {{ border: 1px solid #777; padding: 8px; vertical-align: top; }}
+          th {{ background: #efefef; font-size: 18px; }}
+          td {{ font-size: 17px; min-height: 28px; }}
+          .totals {{ margin-top: 16px; margin-left: auto; width: 340px; border: 1px solid #777; }}
+          .totals .row {{ display:flex; justify-content:space-between; padding:8px 10px; border-bottom:1px solid #ddd; }}
+          .totals .row:last-child {{ border-bottom:none; font-weight:700; font-size:22px; }}
+        </style>
+      </head>
+      <body>
+        <div class="header">
+          <p class="brand">Cash & Carry Furniture</p>
+          <div>Cappincur, Tullamore, Co. Offaly</div>
+          <div>Office: 057 9351054 &nbsp; Shop: 057 9360376</div>
+        </div>
+        <div class="meta">
+          <div class="box">
+            <strong>To:</strong><br />
+            {order['customer']['name']}<br />
+            {order['customer']['address']}<br />
+            {order['customer']['phone']}
+          </div>
+          <div class="right">
+            <div><strong>Date:</strong> {created_date}</div>
+            <h2 style="margin:6px 0 0">INVOICE</h2>
+            <div style="font-size:40px; color:#b54343; font-weight:700;">{order['order_number'].replace('ORD-', '')}</div>
+          </div>
+        </div>
+
+        <table>
+          <thead>
+            <tr><th style="width:15%">Quantity</th><th>Items</th><th style="width:22%">Amount</th></tr>
+          </thead>
+          <tbody>{rows_html}</tbody>
+        </table>
+
+        <div class="totals">
+          <div class="row"><span>Subtotal</span><span>€{order['subtotal']:.2f}</span></div>
+          <div class="row"><span>VAT @ 23%</span><span>€{total_vat:.2f}</span></div>
+          <div class="row"><span>Total</span><span>€{order['total']:.2f}</span></div>
+        </div>
+      </body>
+    </html>
+    """
+
+    return {"receipt": "\n".join(receipt_lines), "html": invoice_html}
 
 # Get drivers list for assignment
 @api_router.get("/drivers", response_model=List[UserResponse])
