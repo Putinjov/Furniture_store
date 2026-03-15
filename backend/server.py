@@ -3,6 +3,7 @@ from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from starlette.middleware.cors import CORSMiddleware
 from config import settings
 from db import db
+from exception_handlers import register_exception_handlers
 import logging
 from pydantic import BaseModel, Field, EmailStr
 from typing import List, Optional, Dict, Any
@@ -11,6 +12,7 @@ from datetime import datetime, timedelta
 import jwt
 from passlib.context import CryptContext
 from bson import ObjectId
+from utils.object_id import parse_object_id
 from enum import Enum
 import csv
 import io
@@ -18,6 +20,7 @@ import pandas as pd
 
 # Create the main app
 app = FastAPI(title="Furniture Store Management API")
+register_exception_handlers(app)
 
 # Create a router with the /api prefix
 api_router = APIRouter(prefix="/api")
@@ -332,7 +335,7 @@ async def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(s
         user_id = payload.get("sub")
         if user_id is None:
             raise HTTPException(status_code=401, detail="Invalid token")
-        user = await db.users.find_one({"_id": ObjectId(user_id)})
+        user = await db.users.find_one({"_id": parse_object_id(user_id, "user_id")})
         if user is None:
             raise HTTPException(status_code=401, detail="User not found")
         if not user.get("is_active", True):
@@ -380,21 +383,6 @@ async def startup_event():
     await db.orders.create_index("driver_id")
     await db.deliveries.create_index("driver_id")
     await db.action_logs.create_index("timestamp")
-    
-    # Create default super admin if not exists
-    existing_admin = await db.users.find_one({"email": "admin@store.com"})
-    if not existing_admin:
-        admin_user = {
-            "_id": ObjectId(),
-            "email": "admin@store.com",
-            "name": "Super Admin",
-            "password": hash_password("admin123"),
-            "role": UserRole.OWNER.value,
-            "is_active": True,
-            "created_at": datetime.utcnow()
-        }
-        await db.users.insert_one(admin_user)
-        logger.info("Default super admin created: admin@store.com / admin123")
     
     # Create default services if none exist
     services_count = await db.services.count_documents({})
@@ -561,7 +549,7 @@ async def get_users(
 
 @api_router.get("/users/{user_id}", response_model=UserResponse)
 async def get_user(user_id: str, current_user: dict = Depends(require_roles([UserRole.OWNER]))):
-    user = await db.users.find_one({"_id": ObjectId(user_id)})
+    user = await db.users.find_one({"_id": parse_object_id(user_id, "user_id")})
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
     return UserResponse(
@@ -575,7 +563,7 @@ async def get_user(user_id: str, current_user: dict = Depends(require_roles([Use
 
 @api_router.put("/users/{user_id}", response_model=UserResponse)
 async def update_user(user_id: str, user_data: UserUpdate, current_user: dict = Depends(require_roles([UserRole.OWNER]))):
-    user = await db.users.find_one({"_id": ObjectId(user_id)})
+    user = await db.users.find_one({"_id": parse_object_id(user_id, "user_id")})
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
     
@@ -586,11 +574,11 @@ async def update_user(user_id: str, user_data: UserUpdate, current_user: dict = 
         update_data["role"] = update_data["role"].value
     
     if update_data:
-        await db.users.update_one({"_id": ObjectId(user_id)}, {"$set": update_data})
+        await db.users.update_one({"_id": parse_object_id(user_id, "user_id")}, {"$set": update_data})
     
     await log_action(str(current_user["_id"]), current_user["name"], "update_user", "user", user_id, update_data)
     
-    updated_user = await db.users.find_one({"_id": ObjectId(user_id)})
+    updated_user = await db.users.find_one({"_id": parse_object_id(user_id, "user_id")})
     return UserResponse(
         id=str(updated_user["_id"]),
         email=updated_user["email"],
@@ -605,7 +593,7 @@ async def delete_user(user_id: str, current_user: dict = Depends(require_roles([
     if str(current_user["_id"]) == user_id:
         raise HTTPException(status_code=400, detail="Cannot delete your own account")
     
-    result = await db.users.delete_one({"_id": ObjectId(user_id)})
+    result = await db.users.delete_one({"_id": parse_object_id(user_id, "user_id")})
     if result.deleted_count == 0:
         raise HTTPException(status_code=404, detail="User not found")
     
@@ -653,13 +641,13 @@ async def get_categories(
 @api_router.put("/categories/{category_id}", response_model=CategoryResponse)
 async def update_category(category_id: str, category_data: CategoryCreate, current_user: dict = Depends(require_roles([UserRole.OWNER, UserRole.MANAGER]))):
     result = await db.categories.update_one(
-        {"_id": ObjectId(category_id)},
+        {"_id": parse_object_id(category_id, "category_id")},
         {"$set": {"name": category_data.name, "description": category_data.description}}
     )
     if result.matched_count == 0:
         raise HTTPException(status_code=404, detail="Category not found")
     
-    category = await db.categories.find_one({"_id": ObjectId(category_id)})
+    category = await db.categories.find_one({"_id": parse_object_id(category_id, "category_id")})
     return CategoryResponse(
         id=str(category["_id"]),
         name=category["name"],
@@ -669,12 +657,14 @@ async def update_category(category_id: str, category_data: CategoryCreate, curre
 
 @api_router.delete("/categories/{category_id}")
 async def delete_category(category_id: str, current_user: dict = Depends(require_roles([UserRole.OWNER, UserRole.MANAGER]))):
+    category_object_id = parse_object_id(category_id, "category_id")
+
     # Check if products use this category
-    products_count = await db.products.count_documents({"category_id": category_id})
+    products_count = await db.products.count_documents({"category_id": str(category_object_id)})
     if products_count > 0:
         raise HTTPException(status_code=400, detail=f"Cannot delete category with {products_count} products")
     
-    result = await db.categories.delete_one({"_id": ObjectId(category_id)})
+    result = await db.categories.delete_one({"_id": category_object_id})
     if result.deleted_count == 0:
         raise HTTPException(status_code=404, detail="Category not found")
     
@@ -685,7 +675,7 @@ async def delete_category(category_id: str, current_user: dict = Depends(require
 @api_router.post("/products", response_model=ProductResponse)
 async def create_product(product_data: ProductCreate, current_user: dict = Depends(require_roles([UserRole.OWNER, UserRole.MANAGER]))):
     # Verify category exists
-    category = await db.categories.find_one({"_id": ObjectId(product_data.category_id)})
+    category = await db.categories.find_one({"_id": parse_object_id(product_data.category_id, "category_id")})
     if not category:
         raise HTTPException(status_code=400, detail="Category not found")
     
@@ -750,7 +740,7 @@ async def get_products(
 
 @api_router.get("/products/{product_id}", response_model=ProductResponse)
 async def get_product(product_id: str, current_user: dict = Depends(get_current_user)):
-    product = await db.products.find_one({"_id": ObjectId(product_id)})
+    product = await db.products.find_one({"_id": parse_object_id(product_id, "product_id")})
     if not product:
         raise HTTPException(status_code=404, detail="Product not found")
     
@@ -774,7 +764,7 @@ async def get_product(product_id: str, current_user: dict = Depends(get_current_
 
 @api_router.put("/products/{product_id}", response_model=ProductResponse)
 async def update_product(product_id: str, product_data: ProductUpdate, current_user: dict = Depends(require_roles([UserRole.OWNER, UserRole.MANAGER]))):
-    product = await db.products.find_one({"_id": ObjectId(product_id)})
+    product = await db.products.find_one({"_id": parse_object_id(product_id, "product_id")})
     if not product:
         raise HTTPException(status_code=404, detail="Product not found")
     
@@ -783,7 +773,7 @@ async def update_product(product_id: str, product_data: ProductUpdate, current_u
         update_data["status"] = update_data["status"].value
     update_data["updated_at"] = datetime.utcnow()
     
-    await db.products.update_one({"_id": ObjectId(product_id)}, {"$set": update_data})
+    await db.products.update_one({"_id": parse_object_id(product_id, "product_id")}, {"$set": update_data})
     
     await log_action(str(current_user["_id"]), current_user["name"], "update_product", "product", product_id, update_data)
     
@@ -791,7 +781,7 @@ async def update_product(product_id: str, product_data: ProductUpdate, current_u
 
 @api_router.delete("/products/{product_id}")
 async def delete_product(product_id: str, current_user: dict = Depends(require_roles([UserRole.OWNER, UserRole.MANAGER]))):
-    result = await db.products.delete_one({"_id": ObjectId(product_id)})
+    result = await db.products.delete_one({"_id": parse_object_id(product_id, "product_id")})
     if result.deleted_count == 0:
         raise HTTPException(status_code=404, detail="Product not found")
     
@@ -987,11 +977,11 @@ async def update_service(service_id: str, service_data: ServiceUpdate, current_u
     if not update_data:
         raise HTTPException(status_code=400, detail="No data to update")
     
-    result = await db.services.update_one({"_id": ObjectId(service_id)}, {"$set": update_data})
+    result = await db.services.update_one({"_id": parse_object_id(service_id, "service_id")}, {"$set": update_data})
     if result.matched_count == 0:
         raise HTTPException(status_code=404, detail="Service not found")
     
-    service = await db.services.find_one({"_id": ObjectId(service_id)})
+    service = await db.services.find_one({"_id": parse_object_id(service_id, "service_id")})
     return ServiceResponse(
         id=str(service["_id"]),
         name=service["name"],
@@ -1003,7 +993,7 @@ async def update_service(service_id: str, service_data: ServiceUpdate, current_u
 
 @api_router.delete("/services/{service_id}")
 async def delete_service(service_id: str, current_user: dict = Depends(require_roles([UserRole.OWNER, UserRole.MANAGER]))):
-    result = await db.services.delete_one({"_id": ObjectId(service_id)})
+    result = await db.services.delete_one({"_id": parse_object_id(service_id, "service_id")})
     if result.deleted_count == 0:
         raise HTTPException(status_code=404, detail="Service not found")
     return {"message": "Service deleted successfully"}
@@ -1051,7 +1041,7 @@ async def create_order(order_data: OrderCreate, current_user: dict = Depends(req
     if order_data.services:
         for service in order_data.services:
             # Get service type info
-            service_doc = await db.services.find_one({"_id": ObjectId(service.service_id)})
+            service_doc = await db.services.find_one({"_id": parse_object_id(service.service_id, "service_id")})
             if service_doc:
                 service_type = service_doc.get("service_type", "assembly")
                 base_price = service_doc.get("base_price", service.base_price)
@@ -1085,7 +1075,7 @@ async def create_order(order_data: OrderCreate, current_user: dict = Depends(req
     # Check and update stock
     has_stock_issues = False
     for item in order_data.items:
-        product = await db.products.find_one({"_id": ObjectId(item.product_id)})
+        product = await db.products.find_one({"_id": parse_object_id(item.product_id, "product_id")})
         if product:
             new_quantity = product["stock_quantity"] - item.quantity
             if new_quantity < 0:
@@ -1098,7 +1088,7 @@ async def create_order(order_data: OrderCreate, current_user: dict = Depends(req
                 status = product["status"]
             
             await db.products.update_one(
-                {"_id": ObjectId(item.product_id)},
+                {"_id": parse_object_id(item.product_id, "product_id")},
                 {"$set": {"stock_quantity": new_quantity, "status": status, "updated_at": datetime.utcnow()}}
             )
     
@@ -1221,7 +1211,7 @@ async def get_orders(
 
 @api_router.get("/orders/{order_id}", response_model=OrderResponse)
 async def get_order(order_id: str, current_user: dict = Depends(get_current_user)):
-    order = await db.orders.find_one({"_id": ObjectId(order_id)})
+    order = await db.orders.find_one({"_id": parse_object_id(order_id, "order_id")})
     if not order:
         raise HTTPException(status_code=404, detail="Order not found")
     
@@ -1254,7 +1244,7 @@ async def get_order(order_id: str, current_user: dict = Depends(get_current_user
 
 @api_router.put("/orders/{order_id}", response_model=OrderResponse)
 async def update_order(order_id: str, order_data: OrderUpdate, current_user: dict = Depends(require_roles([UserRole.OWNER, UserRole.MANAGER, UserRole.SELLER]))):
-    order = await db.orders.find_one({"_id": ObjectId(order_id)})
+    order = await db.orders.find_one({"_id": parse_object_id(order_id, "order_id")})
     if not order:
         raise HTTPException(status_code=404, detail="Order not found")
     
@@ -1276,7 +1266,7 @@ async def update_order(order_id: str, order_data: OrderUpdate, current_user: dic
             if order.get("driver_id") and order.get("driver_id") != update_data["driver_id"]:
                 raise HTTPException(status_code=400, detail="Driver is already assigned to this order")
 
-            driver = await db.users.find_one({"_id": ObjectId(update_data["driver_id"])})
+            driver = await db.users.find_one({"_id": parse_object_id(update_data["driver_id"], "driver_id")})
             if not driver or driver.get("role") != UserRole.DRIVER.value or not driver.get("is_active", True):
                 raise HTTPException(status_code=400, detail="Selected user is not an active driver")
 
@@ -1301,7 +1291,7 @@ async def update_order(order_id: str, order_data: OrderUpdate, current_user: dic
     
     update_data["updated_at"] = datetime.utcnow()
     
-    await db.orders.update_one({"_id": ObjectId(order_id)}, {"$set": update_data})
+    await db.orders.update_one({"_id": parse_object_id(order_id, "order_id")}, {"$set": update_data})
     
     await log_action(str(current_user["_id"]), current_user["name"], "update_order", "order", order_id, update_data)
     
@@ -1309,7 +1299,7 @@ async def update_order(order_id: str, order_data: OrderUpdate, current_user: dic
 
 @api_router.delete("/orders/{order_id}")
 async def delete_order(order_id: str, current_user: dict = Depends(require_roles([UserRole.OWNER]))):
-    result = await db.orders.delete_one({"_id": ObjectId(order_id)})
+    result = await db.orders.delete_one({"_id": parse_object_id(order_id, "order_id")})
     if result.deleted_count == 0:
         raise HTTPException(status_code=404, detail="Order not found")
     
@@ -1325,7 +1315,7 @@ async def delete_order(order_id: str, current_user: dict = Depends(require_roles
 @api_router.post("/orders/{order_id}/payments", response_model=OrderResponse)
 async def add_payment(order_id: str, payment_data: PaymentCreate, current_user: dict = Depends(get_current_user)):
     """Add a payment to an order. All roles can add payments but with different options."""
-    order = await db.orders.find_one({"_id": ObjectId(order_id)})
+    order = await db.orders.find_one({"_id": parse_object_id(order_id, "order_id")})
     if not order:
         raise HTTPException(status_code=404, detail="Order not found")
 
@@ -1398,7 +1388,7 @@ async def add_payment(order_id: str, payment_data: PaymentCreate, current_user: 
     
     # Update order
     await db.orders.update_one(
-        {"_id": ObjectId(order_id)},
+        {"_id": parse_object_id(order_id, "order_id")},
         {
             "$set": {
                 "payments": current_payments,
@@ -1419,7 +1409,7 @@ async def add_payment(order_id: str, payment_data: PaymentCreate, current_user: 
     )
     
     # Return updated order
-    updated_order = await db.orders.find_one({"_id": ObjectId(order_id)})
+    updated_order = await db.orders.find_one({"_id": parse_object_id(order_id, "order_id")})
     return OrderResponse(
         id=str(updated_order["_id"]),
         order_number=updated_order["order_number"],
@@ -1517,7 +1507,7 @@ async def get_deliveries(
 
 @api_router.put("/deliveries/{delivery_id}", response_model=DeliveryResponse)
 async def update_delivery(delivery_id: str, delivery_data: DeliveryUpdate, current_user: dict = Depends(require_roles([UserRole.OWNER, UserRole.MANAGER, UserRole.DRIVER]))):
-    delivery = await db.deliveries.find_one({"_id": ObjectId(delivery_id)})
+    delivery = await db.deliveries.find_one({"_id": parse_object_id(delivery_id, "delivery_id")})
     if not delivery:
         raise HTTPException(status_code=404, detail="Delivery not found")
     
@@ -1532,7 +1522,7 @@ async def update_delivery(delivery_id: str, delivery_data: DeliveryUpdate, curre
     if delivery_data.notes:
         update_data["notes"] = delivery_data.notes
     
-    await db.deliveries.update_one({"_id": ObjectId(delivery_id)}, {"$set": update_data})
+    await db.deliveries.update_one({"_id": parse_object_id(delivery_id, "delivery_id")}, {"$set": update_data})
     
     # Update order status based on delivery status
     order_status_map = {
@@ -1543,13 +1533,13 @@ async def update_delivery(delivery_id: str, delivery_data: DeliveryUpdate, curre
     
     if delivery_data.status.value in order_status_map:
         await db.orders.update_one(
-            {"_id": ObjectId(delivery["order_id"])},
+            {"_id": parse_object_id(delivery["order_id"], "order_id")},
             {"$set": {"status": order_status_map[delivery_data.status.value], "updated_at": datetime.utcnow()}}
         )
     
     await log_action(str(current_user["_id"]), current_user["name"], "update_delivery", "delivery", delivery_id, update_data)
     
-    updated = await db.deliveries.find_one({"_id": ObjectId(delivery_id)})
+    updated = await db.deliveries.find_one({"_id": parse_object_id(delivery_id, "delivery_id")})
     return DeliveryResponse(
         id=str(updated["_id"]),
         order_id=updated["order_id"],
@@ -1654,7 +1644,7 @@ async def get_action_logs(
 # Receipt generation endpoint
 @api_router.get("/orders/{order_id}/receipt")
 async def get_order_receipt(order_id: str, current_user: dict = Depends(get_current_user)):
-    order = await db.orders.find_one({"_id": ObjectId(order_id)})
+    order = await db.orders.find_one({"_id": parse_object_id(order_id, "order_id")})
     if not order:
         raise HTTPException(status_code=404, detail="Order not found")
     

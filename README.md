@@ -29,13 +29,13 @@ Furniture Store — full-stack застосунок для керування м
 ```env
 MONGODB_URI=mongodb+srv://USERNAME:PASSWORD@CLUSTER_URL/?retryWrites=true&w=majority
 DB_NAME=furniture_store_db
-JWT_SECRET=change_me
+JWT_SECRET=replace_with_a_strong_random_secret
 CORS_ORIGINS=http://localhost:3000,http://localhost:8081
 ENVIRONMENT=development
 PORT=8000
 ```
 
-> `MONGODB_URI` обов'язковий. `DB_NAME` за замовчуванням: `furniture_store_db`.
+> `MONGODB_URI` і `JWT_SECRET` обов'язкові. `DB_NAME` за замовчуванням: `furniture_store_db`.
 
 ### Frontend (`frontend/.env`)
 
@@ -56,6 +56,8 @@ uvicorn server:app --host 0.0.0.0 --port 8000 --reload
 ```
 
 API буде доступний на `http://localhost:8000`, документація: `http://localhost:8000/docs`.
+
+> Backend не створює дефолтного адміністратора автоматично. Створіть першого користувача явно через API/скрипт bootstrap у dev-середовищі.
 
 ### Імпорт товарів з Excel/CSV
 
